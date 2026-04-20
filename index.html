@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>2H — Kiểm tra giá trước khi đẩy sàn</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: Arial, sans-serif; background: #f5f6fa; color: #222; font-size: 14px; }
+
+.header { background: #1a1a2e; color: white; padding: 16px 32px; display: flex; align-items: center; gap: 16px; }
+.header h1 { font-size: 19px; font-weight: 700; }
+.header span { font-size: 12px; color: #9ab; display: block; margin-top: 2px; }
+.logo { background: #e63946; color: white; font-weight: 900; font-size: 17px; padding: 6px 12px; border-radius: 6px; }
+
+.main { max-width: 1100px; margin: 24px auto; padding: 0 20px; }
+.card { background: white; border-radius: 10px; border: 1px solid #e2e6ea; padding: 24px; margin-bottom: 18px; }
+.card-title { font-size: 15px; font-weight: 700; color: #1a1a2e; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
+
+/* Master data status bar */
+.master-bar {
+  background: white; border-radius: 10px; border: 1px solid #e2e6ea;
+  padding: 14px 20px; margin-bottom: 18px;
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+}
+.master-status { display: flex; align-items: center; gap: 10px; flex: 1; }
+.status-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.dot-ok      { background: #27ae60; }
+.dot-loading { background: #f39c12; animation: pulse 1s infinite; }
+.dot-err     { background: #e63946; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+.master-info { font-size: 13px; }
+.master-info strong { color: #1a1a2e; }
+.master-info small  { color: #888; display: block; font-size: 11px; margin-top: 1px; }
+.btn-refresh { background: #f0f4ff; color: #4a6cf7; border: 1.5px solid #c5d0ef; border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 12px; font-weight: 700; white-space: nowrap; }
+.btn-refresh:hover { background: #e0e8ff; }
+.btn-config { background: transparent; color: #888; border: 1.5px solid #dde; border-radius: 6px; padding: 6px 12px; cursor: pointer; font-size: 12px; }
+.btn-config:hover { color: #555; border-color: #bbb; }
+
+/* Config panel */
+#configPanel { display: none; }
+.config-form input {
+  width: 100%; border: 1.5px solid #dde2ea; border-radius: 6px;
+  padding: 9px 12px; font-size: 13px; margin-bottom: 10px; font-family: monospace;
+}
+.config-form input:focus { outline: none; border-color: #4a6cf7; }
+.config-hint { background: #f0f4ff; border-radius: 8px; padding: 14px 16px; font-size: 12px; color: #2c3e8a; margin-bottom: 14px; line-height: 1.7; }
+.config-hint code { background: #1a1a2e; color: #7ecfff; padding: 2px 6px; border-radius: 4px; font-size: 11px; }
+.btn-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.btn-save { background: #1a1a2e; color: white; border: none; border-radius: 6px; padding: 9px 22px; cursor: pointer; font-size: 13px; font-weight: 700; }
+.btn-save:hover { background: #2d2d4e; }
+.btn-cancel { background: white; color: #888; border: 1.5px solid #dde; border-radius: 6px; padding: 9px 18px; cursor: pointer; font-size: 13px; }
+
+/* Upload */
+.upload-zone {
+  border: 2px dashed #c0c8d8; border-radius: 8px; padding: 30px 20px;
+  text-align: center; cursor: pointer; transition: all 0.2s; background: #f8f9fd;
+}
+.upload-zone:hover, .upload-zone.dragover { border-color: #4a6cf7; background: #f0f4ff; }
+.upload-zone.done { border-color: #27ae60; background: #f0faf4; }
+.upload-icon { font-size: 36px; margin-bottom: 8px; }
+.btn-pick { display: inline-block; background: #4a6cf7; color: white; padding: 8px 20px; border-radius: 6px; font-weight: 600; cursor: pointer; margin-top: 10px; font-size: 13px; border: none; }
+.file-ok { color: #27ae60; font-weight: 600; font-size: 13px; margin-top: 8px; }
+
+.btn-check { background: #e63946; color: white; border: none; border-radius: 8px; padding: 12px 32px; font-size: 15px; font-weight: 700; cursor: pointer; width: 100%; margin-top: 4px; transition: background .2s; }
+.btn-check:hover { background: #c0313d; }
+.btn-check:disabled { background: #ccc; cursor: not-allowed; }
+
+/* Summary */
+.summary-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(140px,1fr)); gap: 12px; margin-bottom: 18px; }
+.stat { background: white; border-radius: 10px; border: 1px solid #e2e6ea; padding: 16px; text-align: center; }
+.stat .num { font-size: 28px; font-weight: 800; line-height: 1; margin-bottom: 4px; }
+.stat .lbl { font-size: 11px; color: #666; font-weight: 600; text-transform: uppercase; letter-spacing: .4px; }
+.c-total .num { color: #1a1a2e; }
+.c-err   .num { color: #e63946; }
+.c-ok    .num { color: #27ae60; }
+.c-miss  .num { color: #8e44ad; }
+.c-pct   .num { color: #e67e22; }
+
+.banner { border-radius: 8px; padding: 14px 18px; font-weight: 600; text-align: center; font-size: 14px; margin-bottom: 16px; }
+.banner-ok  { background: #eafaf1; border: 1px solid #a9dfbf; color: #1e8449; }
+.banner-err { background: #fdecea; border: 1px solid #f5c6cb; color: #c0392b; }
+
+/* NCC chips */
+.ncc-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.ncc-chip { padding: 5px 14px; border-radius: 20px; font-size: 12px; font-weight: 700; background: #fdecea; border: 1.5px solid #f5c6cb; color: #c0392b; }
+
+/* Table */
+.results-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 8px; }
+.tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+.tab { padding: 5px 14px; border-radius: 20px; cursor: pointer; font-size: 12px; font-weight: 600; border: 1.5px solid #dde2ea; background: white; color: #555; }
+.tab.active { background: #1a1a2e; color: white; border-color: #1a1a2e; }
+.tab.t-err.active  { background: #e63946; border-color: #e63946; }
+.tab.t-miss.active { background: #8e44ad; border-color: #8e44ad; }
+.btn-export { background: #27ae60; color: white; border: none; border-radius: 6px; padding: 8px 18px; cursor: pointer; font-size: 13px; font-weight: 600; }
+
+.table-wrap { overflow-x: auto; border-radius: 8px; border: 1px solid #e2e6ea; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; }
+thead th { background: #1a1a2e; color: white; padding: 9px 12px; text-align: left; white-space: nowrap; font-size: 11px; font-weight: 600; }
+tbody tr { border-bottom: 1px solid #f0f0f0; }
+tbody tr:hover { background: #fafbff; }
+tbody td { padding: 8px 12px; vertical-align: middle; }
+tr.r-err  { background: #fff5f5 !important; }
+tr.r-miss { background: #faf0ff !important; }
+
+.badge { display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 10px; font-weight: 700; white-space: nowrap; }
+.b-ok   { background: #eafaf1; color: #27ae60; }
+.b-err  { background: #fdecea; color: #e63946; }
+.b-miss { background: #f5e8ff; color: #8e44ad; }
+.err-txt { font-size: 11px; color: #e63946; font-weight: 600; }
+.miss-txt { font-size: 11px; color: #8e44ad; font-weight: 600; }
+.pname { max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.page-info { font-size: 11px; color: #999; margin-top: 8px; text-align: center; }
+.pagination { display: flex; justify-content: center; gap: 5px; margin-top: 8px; flex-wrap: wrap; }
+.pg { padding: 4px 10px; border: 1px solid #dde; border-radius: 4px; cursor: pointer; font-size: 11px; background: white; }
+.pg.active { background: #1a1a2e; color: white; border-color: #1a1a2e; }
+
+#resultSection { display: none; }
+#loadingRow { display: none; text-align: center; padding: 16px; color: #666; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="logo">2H</div>
+  <div>
+    <h1>Kiểm tra giá trước khi đẩy sàn</h1>
+    <span>Dữ liệu chuẩn đồng bộ tự động từ Google Sheets</span>
+  </div>
+</div>
+
+<div class="main">
+
+  <!-- Master data status bar -->
+  <div class="master-bar">
+    <div class="master-status">
+      <div class="status-dot dot-loading" id="statusDot"></div>
+      <div class="master-info">
+        <strong id="statusText">Đang tải dữ liệu chuẩn...</strong>
+        <small id="statusSub"></small>
+      </div>
+    </div>
+    <button class="btn-refresh" onclick="loadMaster(true)">↻ Tải lại</button>
+    <button class="btn-config" onclick="toggleConfig()">⚙ Cấu hình</button>
+  </div>
+
+  <!-- Config panel -->
+  <div class="card" id="configPanel">
+    <div class="card-title">⚙️ Cấu hình nguồn dữ liệu chuẩn</div>
+    <div class="config-hint">
+      <strong>📋 Hướng dẫn lấy link Google Sheets:</strong>
+      1. Mở file Google Sheets chứa master data (SKU + NCC + Giá + % Giảm)<br>
+      2. Vào <strong>File → Share → Publish to web</strong><br>
+      3. Chọn sheet cần dùng → Chọn định dạng <strong>Comma-separated values (.csv)</strong><br>
+      4. Bấm <strong>Publish</strong> → Copy link → Dán vào ô bên dưới<br><br>
+      Link đúng sẽ có dạng: <code>https://docs.google.com/spreadsheets/d/.../pub?...output=csv</code>
+    </div>
+    <div class="config-form">
+      <label style="font-size:12px;font-weight:700;color:#555;display:block;margin-bottom:6px;">LINK CSV GOOGLE SHEETS</label>
+      <input type="text" id="sheetUrl" placeholder="https://docs.google.com/spreadsheets/d/...">
+      <label style="font-size:12px;font-weight:700;color:#555;display:block;margin-bottom:6px;margin-top:4px;">ĐỘ LỆCH % CHO PHÉP (±)</label>
+      <input type="number" id="toleranceInput" value="0.5" min="0" max="5" step="0.1" style="width:120px">
+    </div>
+    <div class="btn-row">
+      <button class="btn-save" onclick="saveConfig()">💾 Lưu & tải dữ liệu</button>
+      <button class="btn-cancel" onclick="toggleConfig()">Huỷ</button>
+    </div>
+  </div>
+
+  <!-- Upload price file -->
+  <div class="card">
+    <div class="card-title">📤 Upload file đẩy sàn để kiểm tra</div>
+    <div class="upload-zone" id="uploadZone" onclick="document.getElementById('priceInput').click()">
+      <div class="upload-icon">📊</div>
+      <p><strong>Kéo thả file Excel vào đây</strong></p>
+      <p style="color:#999;font-size:12px;margin-top:4px">hoặc</p>
+      <button class="btn-pick" onclick="event.stopPropagation();document.getElementById('priceInput').click()">Chọn file</button>
+      <p style="font-size:11px;color:#aaa;margin-top:8px">File chuẩn bị upload lên Shopee / TikTok Shop (.xlsx)</p>
+    </div>
+    <input type="file" id="priceInput" accept=".xlsx,.xls" style="display:none">
+    <div id="priceStatus"></div>
+    <button class="btn-check" id="btnCheck" onclick="runCheck()" disabled style="margin-top:16px">
+      🔍 Kiểm tra file
+    </button>
+  </div>
+
+  <div id="loadingRow">⏳ Đang đối chiếu dữ liệu...</div>
+
+  <!-- Results -->
+  <div id="resultSection">
+    <div id="banner" class="banner"></div>
+    <div class="summary-grid" id="summaryGrid"></div>
+
+    <div class="card" id="nccCard" style="display:none">
+      <div class="card-title">🏢 Lỗi theo Nhà cung cấp</div>
+      <div class="ncc-chips" id="nccChips"></div>
+    </div>
+
+    <div class="card">
+      <div class="results-bar">
+        <div class="tabs">
+          <div class="tab active" onclick="setFilter('all',this)">Tất cả</div>
+          <div class="tab t-err"  onclick="setFilter('err',this)">Có lỗi</div>
+          <div class="tab t-miss" onclick="setFilter('miss',this)">SKU không có chuẩn</div>
+          <div class="tab"        onclick="setFilter('ok',this)">Hợp lệ</div>
+        </div>
+        <button class="btn-export" onclick="exportFile()">⬇ Xuất file lỗi</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>Dòng</th><th>SKU</th><th>Tên sản phẩm</th><th>NCC</th>
+            <th style="text-align:right">Giá gốc</th>
+            <th style="text-align:right">Giá đã giảm</th>
+            <th style="text-align:center">% Giảm TT</th>
+            <th style="text-align:center">% Cho phép</th>
+            <th>Trạng thái</th><th>Chi tiết lỗi</th>
+          </tr></thead>
+          <tbody id="tbody"></tbody>
+        </table>
+      </div>
+      <div class="page-info" id="pageInfo"></div>
+      <div class="pagination" id="paginationEl"></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ── Config ────────────────────────────────────────────────────────────────
+const LS_URL = '2h_sheet_url';
+const LS_TOL = '2h_tolerance';
+const DEFAULT_TOL = 0.5;
+
+let masterMap  = null;
+let masterMeta = { skus: 0, nccs: 0, loadedAt: null };
+let priceBytes = null;
+let allRows    = [];
+let curFilter  = 'all';
+let curPage    = 1;
+const PG = 50;
+
+// ── Init ──────────────────────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', () => {
+  const url = localStorage.getItem(LS_URL) || '';
+  const tol = localStorage.getItem(LS_TOL) || DEFAULT_TOL;
+  document.getElementById('sheetUrl').value = url;
+  document.getElementById('toleranceInput').value = tol;
+  if (url) loadMaster(false);
+  else { setStatus('err', 'Chưa cấu hình nguồn dữ liệu', 'Bấm ⚙ Cấu hình để nhập link Google Sheets'); toggleConfig(); }
+  setupDrop();
+});
+
+// ── Config UI ────────────────────────────────────────────────────────────
+function toggleConfig() {
+  const p = document.getElementById('configPanel');
+  p.style.display = p.style.display === 'none' ? 'block' : 'none';
+}
+function saveConfig() {
+  const url = document.getElementById('sheetUrl').value.trim();
+  const tol = document.getElementById('toleranceInput').value;
+  if (!url) { alert('Vui lòng nhập link Google Sheets.'); return; }
+  localStorage.setItem(LS_URL, url);
+  localStorage.setItem(LS_TOL, tol);
+  document.getElementById('configPanel').style.display = 'none';
+  loadMaster(true);
+}
+
+// ── Load master from Google Sheets ───────────────────────────────────────
+function setStatus(state, text, sub) {
+  const dot  = document.getElementById('statusDot');
+  const txt  = document.getElementById('statusText');
+  const sub_ = document.getElementById('statusSub');
+  dot.className  = 'status-dot dot-' + state;
+  txt.textContent = text;
+  sub_.textContent = sub || '';
+}
+
+async function loadMaster(force) {
+  const url = localStorage.getItem(LS_URL);
+  if (!url) return;
+
+  // Use cache if fresh (< 10 min) and not forced
+  const cacheKey = '2h_master_cache';
+  const cacheTs  = '2h_master_ts';
+  if (!force) {
+    const ts = parseInt(localStorage.getItem(cacheTs) || '0');
+    if (Date.now() - ts < 10 * 60 * 1000 && localStorage.getItem(cacheKey)) {
+      try {
+        masterMap  = JSON.parse(localStorage.getItem(cacheKey));
+        masterMeta = JSON.parse(localStorage.getItem('2h_master_meta') || '{}');
+        setStatus('ok', `✅ ${masterMeta.skus?.toLocaleString()} SKU từ ${masterMeta.nccs} NCC`, `Cập nhật lúc ${masterMeta.loadedAt}`);
+        return;
+      } catch(e) {}
+    }
+  }
+
+  setStatus('loading', 'Đang tải dữ liệu chuẩn từ Google Sheets...', '');
+
+  try {
+    const res  = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const text = await res.text();
+    masterMap  = parseCsv(text);
+
+    const nccs = new Set(Object.values(masterMap).map(v => v.ncc)).size;
+    masterMeta = { skus: Object.keys(masterMap).length, nccs, loadedAt: new Date().toLocaleTimeString('vi-VN') };
+
+    localStorage.setItem(cacheKey, JSON.stringify(masterMap));
+    localStorage.setItem('2h_master_meta', JSON.stringify(masterMeta));
+    localStorage.setItem(cacheTs, Date.now().toString());
+
+    setStatus('ok', `✅ ${masterMeta.skus.toLocaleString()} SKU từ ${masterMeta.nccs} NCC`, `Cập nhật lúc ${masterMeta.loadedAt}`);
+  } catch(e) {
+    setStatus('err', '❌ Không tải được dữ liệu chuẩn', 'Kiểm tra lại link hoặc quyền truy cập Google Sheets');
+    console.error(e);
+  }
+}
+
+// ── Parse CSV from Google Sheets ─────────────────────────────────────────
+function parseCsv(text) {
+  const lines = text.split('\n').filter(l => l.trim());
+  if (lines.length < 2) return {};
+
+  const headers = splitCsvLine(lines[0]);
+  const ci = key => {
+    const kws = {
+      sku:    ['mãsku','sốsku','sku','phânloại'],
+      ncc:    ['ncc','nhàcungcấp','supplier','nxb'],
+      giaGoc: ['giágốc','giagoc','gốc','price'],
+      pctMax: ['%giảm','%giam','giảmtốiđa','pctmax','discount'],
+      tenSP:  ['tên','ten','sảnphẩm','name']
+    };
+    for (const kw of kws[key]) {
+      const idx = headers.findIndex(h => h.toLowerCase().replace(/\s+/g,'').replace(/[()]/g,'').includes(kw));
+      if (idx >= 0) return idx;
+    }
+    return -1;
+  };
+
+  const iSku = ci('sku'), iNcc = ci('ncc'), iGia = ci('giaGoc'), iPct = ci('pctMax'), iTen = ci('tenSP');
+  const map = {};
+
+  for (let i = 1; i < lines.length; i++) {
+    const cols = splitCsvLine(lines[i]);
+    const sku  = normSku(cols[iSku] || '');
+    if (!sku) continue;
+    const pctRaw = (cols[iPct] || '').replace('%','').trim();
+    map[sku] = {
+      ncc:    (cols[iNcc] || '').trim(),
+      giaGoc: parseFloat((cols[iGia] || '').replace(/,/g,'')) || null,
+      pctMax: parseFloat(pctRaw) || null,
+      tenSP:  iTen >= 0 ? (cols[iTen] || '').trim() : ''
+    };
+  }
+  return map;
+}
+
+function splitCsvLine(line) {
+  const res = []; let cur = ''; let inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c === '"') { inQ = !inQ; continue; }
+    if (c === ',' && !inQ) { res.push(cur.trim()); cur = ''; continue; }
+    cur += c;
+  }
+  res.push(cur.trim());
+  return res;
+}
+
+function normSku(val) {
+  let s = String(val).trim();
+  if (!s || s.toLowerCase() === 'nan' || s.toLowerCase() === 'null') return '';
+  if (s.endsWith('.0')) s = s.slice(0, -2);
+  return s;
+}
+
+// ── Price file upload ────────────────────────────────────────────────────
+function setupDrop() {
+  const zone = document.getElementById('uploadZone');
+  zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('dragover'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+  zone.addEventListener('drop', e => {
+    e.preventDefault(); zone.classList.remove('dragover');
+    const f = e.dataTransfer.files[0];
+    if (f) handleFile(f);
+  });
+  document.getElementById('priceInput').addEventListener('change', e => {
+    if (e.target.files[0]) handleFile(e.target.files[0]);
+  });
+}
+
+function handleFile(file) {
+  const reader = new FileReader();
+  reader.onload = e => { priceBytes = new Uint8Array(e.target.result); };
+  reader.readAsArrayBuffer(file);
+  document.getElementById('uploadZone').classList.add('done');
+  document.getElementById('priceStatus').innerHTML = `<div class="file-ok">✅ ${file.name}</div>`;
+  document.getElementById('btnCheck').disabled = false;
+}
+
+// ── Validation ───────────────────────────────────────────────────────────
+function guessCol(cols, keywords) {
+  for (const kw of keywords) {
+    const kc = kw.toLowerCase().replace(/\s+/g,'');
+    const f  = cols.find(c => c.toLowerCase().replace(/\s+/g,'').replace(/[()]/g,'').includes(kc));
+    if (f) return f;
+  }
+  return null;
+}
+
+function runCheck() {
+  if (!priceBytes) return;
+  if (!masterMap || Object.keys(masterMap).length === 0) {
+    alert('Chưa tải được dữ liệu chuẩn. Kiểm tra lại cấu hình Google Sheets.');
+    return;
+  }
+  document.getElementById('loadingRow').style.display = 'block';
+  document.getElementById('resultSection').style.display = 'none';
+  setTimeout(doValidate, 60);
+}
+
+function doValidate() {
+  const tolerance = parseFloat(localStorage.getItem(LS_TOL) || DEFAULT_TOL);
+  const wb   = XLSX.read(priceBytes, { type: 'array' });
+  const ws   = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws, { defval: null });
+  const cols = Object.keys(rows[0] || {});
+
+  const colSku = guessCol(cols, ['skuphânloại','sốskuphânloại','skuphanloai','phânloại']);
+  const colGG  = guessCol(cols, ['giágốc','giagoc']);
+  const colGD  = guessCol(cols, ['giađãgiảm','giảm','giagiam']);
+  const colTen = guessCol(cols, ['tênsảnphẩm','tên','ten']);
+
+  allRows = rows.map((row, i) => {
+    const sku  = normSku(row[colSku] || '');
+    const gg   = parseFloat(String(row[colGG]  || '').replace(/,/g,'')) || null;
+    const gd   = parseFloat(String(row[colGD]  || '').replace(/,/g,'')) || null;
+    const ten  = colTen ? (row[colTen] || '') : '';
+    const m    = sku ? masterMap[sku] : null;
+    const errs = [];
+    let type   = 'ok';
+
+    if (!sku) {
+      type = 'warn'; errs.push('Không có SKU');
+    } else if (!m) {
+      type = 'miss'; errs.push('SKU không có trong dữ liệu chuẩn');
+    } else {
+      if (gg && m.giaGoc && Math.abs(gg - m.giaGoc) > 1)
+        errs.push(`Giá gốc sai: file=${fmtN(gg)} | chuẩn=${fmtN(m.giaGoc)}`);
+      if (!gd || gd <= 0) errs.push('Giá đã giảm trống/= 0');
+      else if (gg && gd > gg) errs.push('Giá đã giảm > Giá gốc');
+      const ref = (m.giaGoc || gg);
+      if (ref && gd && ref > 0) {
+        const pct = (ref - gd) / ref * 100;
+        if (m.pctMax !== null && pct > m.pctMax + tolerance)
+          errs.push(`% giảm ${pct.toFixed(1)}% vượt mức NCC (${m.pctMax}%)`);
+      }
+      if (errs.length) type = 'err';
+    }
+
+    const ref2 = m?.giaGoc || gg;
+    const pct  = (ref2 && gd && ref2 > 0) ? (ref2 - gd) / ref2 * 100 : null;
+
+    return { rowNum: i+2, sku, ten: ten || m?.tenSP || '', ncc: m?.ncc || '—',
+             gg, ggMaster: m?.giaGoc, gd, pct, pctMax: m?.pctMax, errs, type };
+  });
+
+  renderResults();
+  document.getElementById('loadingRow').style.display = 'none';
+  document.getElementById('resultSection').style.display = 'block';
+}
+
+// ── Render ───────────────────────────────────────────────────────────────
+function renderResults() {
+  const total = allRows.length;
+  const nErr  = allRows.filter(r => r.type==='err').length;
+  const nMiss = allRows.filter(r => r.type==='miss').length;
+  const nOk   = allRows.filter(r => r.type==='ok').length;
+
+  const b = document.getElementById('banner');
+  b.className = 'banner ' + ((nErr+nMiss) ? 'banner-err' : 'banner-ok');
+  b.textContent = (nErr+nMiss)
+    ? `⚠️ Phát hiện ${nErr} dòng lỗi giá${nMiss ? ' + '+nMiss+' SKU không có chuẩn' : ''} — Cần xử lý trước khi đẩy sàn!`
+    : `✅ Tất cả ${total.toLocaleString()} dòng hợp lệ — Có thể đẩy sàn!`;
+
+  document.getElementById('summaryGrid').innerHTML = `
+    <div class="stat c-total"><div class="num">${total.toLocaleString()}</div><div class="lbl">Tổng dòng</div></div>
+    <div class="stat c-err"><div class="num">${nErr}</div><div class="lbl">Lỗi giá</div></div>
+    <div class="stat c-miss"><div class="num">${nMiss}</div><div class="lbl">SKU không có chuẩn</div></div>
+    <div class="stat c-ok"><div class="num">${nOk}</div><div class="lbl">Hợp lệ</div></div>
+    <div class="stat c-pct"><div class="num">${((nErr+nMiss)/total*100).toFixed(1)}%</div><div class="lbl">Tỷ lệ lỗi</div></div>`;
+
+  // NCC breakdown
+  const byNcc = {};
+  allRows.filter(r=>r.type==='err').forEach(r=>{ byNcc[r.ncc]=(byNcc[r.ncc]||0)+1; });
+  if (Object.keys(byNcc).length) {
+    document.getElementById('nccCard').style.display = 'block';
+    document.getElementById('nccChips').innerHTML =
+      Object.entries(byNcc).sort((a,b)=>b[1]-a[1])
+        .map(([n,c])=>`<div class="ncc-chip">${n} — ${c} lỗi</div>`).join('');
+  } else {
+    document.getElementById('nccCard').style.display = 'none';
+  }
+
+  curFilter='all'; curPage=1;
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  document.querySelectorAll('.tab')[0].classList.add('active');
+  renderTable();
+}
+
+function getFiltered() {
+  if (curFilter==='err')  return allRows.filter(r=>r.type==='err');
+  if (curFilter==='miss') return allRows.filter(r=>r.type==='miss');
+  if (curFilter==='ok')   return allRows.filter(r=>r.type==='ok'||r.type==='warn');
+  return allRows;
+}
+
+function renderTable() {
+  const rows  = getFiltered();
+  const maxPg = Math.max(1, Math.ceil(rows.length/PG));
+  curPage     = Math.min(curPage, maxPg);
+  const s     = (curPage-1)*PG;
+  const page  = rows.slice(s, s+PG);
+
+  document.getElementById('tbody').innerHTML = page.map(r => {
+    const cls  = r.type==='err'?'r-err':r.type==='miss'?'r-miss':'';
+    const badge = r.type==='ok'   ? `<span class="badge b-ok">✅ Hợp lệ</span>`
+                : r.type==='err'  ? `<span class="badge b-err">❌ Lỗi giá</span>`
+                :                   `<span class="badge b-miss">🔍 Không có chuẩn</span>`;
+    const errHtml = r.errs.length
+      ? r.errs.map(e=>`<div class="${r.type==='miss'?'miss-txt':'err-txt'}">• ${e}</div>`).join('')
+      : `<span style="color:#27ae60;font-size:11px">OK</span>`;
+    const pctStyle = r.type==='err' ? 'color:#e63946;font-weight:700' : r.type==='ok' ? 'color:#27ae60' : '';
+    const ggErrStyle = (r.gg && r.ggMaster && Math.abs(r.gg-r.ggMaster)>1) ? 'color:#e63946;font-weight:700' : '';
+
+    return `<tr class="${cls}">
+      <td style="color:#999;font-size:11px">${r.rowNum}</td>
+      <td style="font-size:11px;font-family:monospace">${r.sku||'—'}</td>
+      <td><div class="pname" title="${r.ten}">${r.ten||'—'}</div></td>
+      <td style="font-size:11px;white-space:nowrap">${r.ncc}</td>
+      <td style="text-align:right;font-size:12px;${ggErrStyle}">${fmtN(r.gg)}</td>
+      <td style="text-align:right;font-weight:700">${fmtN(r.gd)}</td>
+      <td style="text-align:center;${pctStyle}">${r.pct!=null?r.pct.toFixed(1)+'%':'—'}</td>
+      <td style="text-align:center;color:#555">${r.pctMax!=null?r.pctMax+'%':'—'}</td>
+      <td>${badge}</td>
+      <td style="min-width:200px">${errHtml}</td>
+    </tr>`;
+  }).join('');
+
+  document.getElementById('pageInfo').textContent = `Hiển thị ${s+1}–${Math.min(s+PG,rows.length)} / ${rows.length} dòng`;
+  renderPagination(maxPg);
+}
+
+function renderPagination(max) {
+  const p = document.getElementById('paginationEl');
+  if (max<=1){p.innerHTML='';return;}
+  let h='';
+  if (curPage>1) h+=`<button class="pg" onclick="goPage(${curPage-1})">‹</button>`;
+  const rng=[]; for(let i=Math.max(1,curPage-2);i<=Math.min(max,curPage+2);i++) rng.push(i);
+  if(rng[0]>1){h+=`<button class="pg" onclick="goPage(1)">1</button>`;if(rng[0]>2)h+='<span style="padding:4px">…</span>';}
+  rng.forEach(i=>h+=`<button class="pg${i===curPage?' active':''}" onclick="goPage(${i})">${i}</button>`);
+  if(rng[rng.length-1]<max){if(rng[rng.length-1]<max-1)h+='<span style="padding:4px">…</span>';h+=`<button class="pg" onclick="goPage(${max})">${max}</button>`;}
+  if(curPage<max) h+=`<button class="pg" onclick="goPage(${curPage+1})">›</button>`;
+  p.innerHTML=h;
+}
+function goPage(n){curPage=n;renderTable();}
+function setFilter(f,el){curFilter=f;curPage=1;document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));el.classList.add('active');renderTable();}
+
+// ── Export ───────────────────────────────────────────────────────────────
+function exportFile() {
+  const errs = allRows.filter(r=>r.type==='err'||r.type==='miss');
+  if (!errs.length){alert('Không có lỗi để xuất!');return;}
+  const data = errs.map(r=>({
+    'Dòng':r.rowNum,'Mã SKU':r.sku,'Tên sản phẩm':r.ten,'NCC':r.ncc,
+    'Giá gốc (file)':r.gg,'Giá gốc (chuẩn)':r.ggMaster??'',
+    'Giá đã giảm':r.gd,
+    '% Giảm TT':r.pct!=null?parseFloat(r.pct.toFixed(2)):'',
+    '% Cho phép':r.pctMax??'',
+    'Loại lỗi':r.type==='miss'?'SKU không có chuẩn':'Lỗi giá',
+    'Chi tiết':r.errs.join(' | ')
+  }));
+  const ws=XLSX.utils.json_to_sheet(data);
+  ws['!cols']=[6,14,40,18,12,12,12,10,10,18,50].map(w=>({wch:w}));
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,ws,'Lỗi');
+  const d=new Date();
+  XLSX.writeFile(wb,`loi_gia_${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}.xlsx`);
+}
+
+function fmtN(n){return(n!=null&&!isNaN(n))?Math.round(n).toLocaleString('vi-VN')+'đ':'—';}
+</script>
+</body>
+</html>
