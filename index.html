@@ -229,8 +229,9 @@ tr.r-miss { background: #faf0ff !important; }
       <div class="results-bar">
         <div class="tabs">
           <div class="tab active" onclick="setFilter('all',this)">Tất cả</div>
-          <div class="tab t-err"  onclick="setFilter('err',this)">Có lỗi</div>
-          <div class="tab t-miss" onclick="setFilter('miss',this)" id="tabMiss">Không tìm được SKU</div>
+          <div class="tab t-err"  onclick="setFilter('err',this)">Có lỗi giá</div>
+          <div class="tab t-miss" onclick="setFilter('nomap',this)" id="tabMiss">Chưa có barcode</div>
+          <div class="tab" style="color:#7b5ea7;border-color:#c9b8f0" onclick="setFilter('nomaster',this)" id="tabNoMaster">Barcode chưa có chuẩn</div>
           <div class="tab"        onclick="setFilter('ok',this)">Hợp lệ</div>
         </div>
         <button class="btn-export" onclick="exportFile()">⬇ Xuất file lỗi</button>
@@ -652,12 +653,12 @@ function doValidate() {
         if (!giaF && !ten) continue; // dòng hoàn toàn rỗng
         type = 'warn'; errs.push('Không có Mã phân loại hàng');
       } else if (!sku) {
-        type = 'miss';
+        type = 'nomap';
         errs.push(mappingMap
-          ? 'Mã phân loại không có trong file mapping'
+          ? 'Chưa có barcode — cần cập nhật SKU trong Shopee'
           : 'Chưa tải file mapping — không tra được SKU');
       } else if (!m) {
-        type = 'miss'; errs.push('SKU không có trong dữ liệu chuẩn');
+        type = 'nomaster'; errs.push('Có barcode nhưng chưa có trong dữ liệu chuẩn (Google Sheets)');
       } else {
         // Kiểm tra Giá Gốc
         if (ggF && m.giaGoc && Math.abs(ggF - m.giaGoc) > 1)
@@ -681,7 +682,7 @@ function doValidate() {
         if (!giaF && !ten) continue;
         type = 'warn'; errs.push('Không có SKU');
       } else if (!m) {
-        type = 'miss'; errs.push('SKU không có trong dữ liệu chuẩn');
+        type = 'nomaster'; errs.push('SKU chưa có trong dữ liệu chuẩn (Google Sheets)');
       } else {
         if (ggF && m.giaGoc && Math.abs(ggF - m.giaGoc) > 1)
           errs.push(`Giá gốc sai: file=${fmtN(ggF)} | chuẩn=${fmtN(m.giaGoc)}`);
@@ -724,16 +725,24 @@ function doValidate() {
 
 // ── Render ────────────────────────────────────────────────────────────────
 function renderResults() {
-  const total = allRows.length;
-  const nErr  = allRows.filter(r => r.type==='err').length;
-  const nMiss = allRows.filter(r => r.type==='miss').length;
-  const nOk   = allRows.filter(r => r.type==='ok').length;
+  const total    = allRows.length;
+  const nErr     = allRows.filter(r => r.type==='err').length;
+  const nNoMap   = allRows.filter(r => r.type==='nomap').length;
+  const nNoMaster= allRows.filter(r => r.type==='nomaster').length;
+  const nMiss    = nNoMap + nNoMaster; // tổng không validate được
+  const nOk      = allRows.filter(r => r.type==='ok').length;
 
   const b = document.getElementById('banner');
   b.className = 'banner ' + ((nErr+nMiss) ? 'banner-err' : 'banner-ok');
-  b.textContent = (nErr+nMiss)
-    ? `⚠️ Phát hiện ${nErr} dòng lỗi giá${nMiss ? ' + '+nMiss+' dòng không tìm được SKU' : ''} — Cần xử lý trước khi đẩy sàn!`
-    : `✅ Tất cả ${total.toLocaleString()} dòng hợp lệ — Có thể đẩy sàn!`;
+  if (nErr+nMiss) {
+    let parts = [];
+    if (nErr)      parts.push(`${nErr} dòng lỗi giá`);
+    if (nNoMap)    parts.push(`${nNoMap} dòng chưa có barcode`);
+    if (nNoMaster) parts.push(`${nNoMaster} dòng barcode chưa trong dữ liệu chuẩn`);
+    b.textContent = `⚠️ Phát hiện ${parts.join(' + ')} — Cần xử lý trước khi đẩy sàn!`;
+  } else {
+    b.textContent = `✅ Tất cả ${total.toLocaleString()} dòng hợp lệ — Có thể đẩy sàn!`;
+  }
 
   // Format label
   const fmtLabel = curFmt === 'eligible'
@@ -741,16 +750,33 @@ function renderResults() {
     : '<span style="background:#eaf5ea;color:#27ae60;border:1.5px solid #a9dfbf;padding:2px 10px;border-radius:12px;font-size:11px;font-weight:700">🏷️ Discount Nomination</span>';
   document.getElementById('fmtTag').innerHTML = fmtLabel;
 
-  document.getElementById('summaryGrid').innerHTML = `
-    <div class="stat c-total"><div class="num">${total.toLocaleString()}</div><div class="lbl">Tổng dòng</div></div>
-    <div class="stat c-err"><div class="num">${nErr}</div><div class="lbl">Lỗi giá</div></div>
-    <div class="stat c-miss"><div class="num">${nMiss}</div><div class="lbl">Không tìm được SKU</div></div>
-    <div class="stat c-ok"><div class="num">${nOk}</div><div class="lbl">Hợp lệ</div></div>
-    <div class="stat c-pct"><div class="num">${total>0?((nErr+nMiss)/total*100).toFixed(1):0}%</div><div class="lbl">Tỷ lệ lỗi</div></div>`;
+  // Summary grid — eligible có thêm 2 ô, discount giữ nguyên
+  if (curFmt === 'eligible') {
+    document.getElementById('summaryGrid').innerHTML = `
+      <div class="stat c-total"><div class="num">${total.toLocaleString()}</div><div class="lbl">Tổng dòng</div></div>
+      <div class="stat c-err"><div class="num">${nErr}</div><div class="lbl">Lỗi giá</div></div>
+      <div class="stat c-miss"><div class="num">${nNoMap}</div><div class="lbl">Chưa có barcode</div></div>
+      <div class="stat" style="background:#f5f0ff;border-color:#c9b8f0"><div class="num" style="color:#7b5ea7">${nNoMaster}</div><div class="lbl">Barcode chưa trong GG Sheet</div></div>
+      <div class="stat c-ok"><div class="num">${nOk}</div><div class="lbl">Hợp lệ</div></div>
+      <div class="stat c-pct"><div class="num">${total>0?((nErr+nMiss)/total*100).toFixed(1):0}%</div><div class="lbl">Tỷ lệ lỗi</div></div>`;
+  } else {
+    document.getElementById('summaryGrid').innerHTML = `
+      <div class="stat c-total"><div class="num">${total.toLocaleString()}</div><div class="lbl">Tổng dòng</div></div>
+      <div class="stat c-err"><div class="num">${nErr}</div><div class="lbl">Lỗi giá</div></div>
+      <div class="stat c-miss"><div class="num">${nNoMaster}</div><div class="lbl">SKU không có chuẩn</div></div>
+      <div class="stat c-ok"><div class="num">${nOk}</div><div class="lbl">Hợp lệ</div></div>
+      <div class="stat c-pct"><div class="num">${total>0?((nErr+nMiss)/total*100).toFixed(1):0}%</div><div class="lbl">Tỷ lệ lỗi</div></div>`;
+  }
 
-  // Cập nhật label tab "miss"
-  document.getElementById('tabMiss').textContent = curFmt === 'eligible'
-    ? 'Không tìm được SKU' : 'SKU không có chuẩn';
+  // Cập nhật tab theo format
+  const tabNoMaster = document.getElementById('tabNoMaster');
+  if (curFmt === 'eligible') {
+    document.getElementById('tabMiss').textContent = 'Chưa có barcode';
+    if (tabNoMaster) tabNoMaster.style.display = '';
+  } else {
+    document.getElementById('tabMiss').textContent = 'SKU không có chuẩn';
+    if (tabNoMaster) tabNoMaster.style.display = 'none';
+  }
 
   // NCC breakdown
   const byNcc = {};
@@ -771,9 +797,11 @@ function renderResults() {
 }
 
 function getFiltered() {
-  if (curFilter==='err')  return allRows.filter(r=>r.type==='err');
-  if (curFilter==='miss') return allRows.filter(r=>r.type==='miss');
-  if (curFilter==='ok')   return allRows.filter(r=>r.type==='ok'||r.type==='warn');
+  if (curFilter==='err')     return allRows.filter(r=>r.type==='err');
+  if (curFilter==='miss')    return allRows.filter(r=>r.type==='nomap'||r.type==='nomaster');
+  if (curFilter==='nomap')   return allRows.filter(r=>r.type==='nomap');
+  if (curFilter==='nomaster')return allRows.filter(r=>r.type==='nomaster');
+  if (curFilter==='ok')      return allRows.filter(r=>r.type==='ok'||r.type==='warn');
   return allRows;
 }
 
@@ -818,12 +846,15 @@ function renderTable() {
   const page  = rows.slice(s, s+PG);
 
   document.getElementById('tbody').innerHTML = page.map(r => {
-    const cls   = r.type==='err'?'r-err':r.type==='miss'?'r-miss':'';
-    const badge = r.type==='ok'  ? `<span class="badge b-ok">✅ Hợp lệ</span>`
-                : r.type==='err' ? `<span class="badge b-err">❌ Lỗi giá</span>`
-                :                  `<span class="badge b-miss">🔍 Không có SKU</span>`;
+    const isMiss = r.type==='nomap'||r.type==='nomaster';
+    const cls   = r.type==='err'?'r-err':isMiss?'r-miss':'';
+    const badge = r.type==='ok'       ? `<span class="badge b-ok">✅ Hợp lệ</span>`
+                : r.type==='err'      ? `<span class="badge b-err">❌ Lỗi giá</span>`
+                : r.type==='nomap'    ? `<span class="badge b-miss">🔍 Chưa có barcode</span>`
+                : r.type==='nomaster' ? `<span class="badge" style="background:#f0e8ff;color:#7b5ea7;border:1px solid #c9b8f0;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700">📋 Barcode chưa có chuẩn</span>`
+                :                      `<span class="badge b-miss">🔍 Không xác định</span>`;
     const errHtml = r.errs.length
-      ? r.errs.map(e=>`<div class="${r.type==='miss'?'miss-txt':'err-txt'}">• ${e}</div>`).join('')
+      ? r.errs.map(e=>`<div class="${isMiss?'miss-txt':'err-txt'}">• ${e}</div>`).join('')
       : `<span style="color:#27ae60;font-size:11px">OK</span>`;
     const pctStyle = r.type==='err' ? 'color:#e63946;font-weight:700' : r.type==='ok' ? 'color:#27ae60' : '';
 
@@ -882,7 +913,7 @@ function setFilter(f,el){curFilter=f;curPage=1;document.querySelectorAll('.tab')
 
 // ── Export ────────────────────────────────────────────────────────────────
 function exportFile() {
-  const errs = allRows.filter(r => r.type==='err' || r.type==='miss');
+  const errs = allRows.filter(r => r.type==='err' || r.type==='nomap' || r.type==='nomaster');
   if (!errs.length) { alert('Không có lỗi để xuất!'); return; }
 
   let data, colWidths;
@@ -899,7 +930,7 @@ function exportFile() {
       'Giá khuyến mãi': r.gd ?? '',
       '% Giảm TT': r.pct != null ? parseFloat(r.pct.toFixed(2)) : '',
       '% Cho phép': r.pctMax ?? '',
-      'Loại lỗi': r.type==='miss' ? 'Không tìm được SKU' : 'Lỗi giá',
+      'Loại lỗi': r.type==='nomap' ? 'Chưa có barcode' : r.type==='nomaster' ? 'Barcode chưa có chuẩn' : 'Lỗi giá',
       'Chi tiết': r.errs.join(' | ')
     }));
     colWidths = [6, 18, 20, 40, 18, 12, 12, 12, 10, 10, 18, 60];
@@ -914,7 +945,7 @@ function exportFile() {
       'Giá đã giảm': r.gd ?? '',
       '% Giảm TT': r.pct != null ? parseFloat(r.pct.toFixed(2)) : '',
       '% Cho phép': r.pctMax ?? '',
-      'Loại lỗi': r.type==='miss' ? 'SKU không có chuẩn' : 'Lỗi giá',
+      'Loại lỗi': r.type==='nomaster' ? 'SKU chưa có chuẩn' : 'Lỗi giá',
       'Chi tiết': r.errs.join(' | ')
     }));
     colWidths = [6, 14, 40, 18, 12, 12, 12, 10, 10, 18, 60];
