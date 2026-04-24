@@ -554,16 +554,22 @@ function doValidate() {
     }
   }
 
-  // ── Tìm chỉ số cột (exact trước, partial sau) ─────────────────────
+  // ── Tìm chỉ số cột ──────────────────────────────────────────────────
+  // exact(): so khớp chính xác không có stripping — dùng cho eligible
+  const exact = name => headers.findIndex(h => norm(h) === norm(name));
+
+  // fc(): so khớp với stripping cụm "(Tùy chọn)" — dùng cho discount nomination
+  // FIX: dùng \(tùychọn\) thay vì character class [()tùychọn] để tránh strip ký tự đơn
+  const strip = s => s.replace(/\(tùychọn\)/g, '').replace(/\(optional\)/g, '');
   const fc = (...kws) => {
     for (const kw of kws) {
       const kc = norm(kw);
-      const idx = headers.findIndex(h => norm(h).replace(/[()tùychọn]/g, '') === kc);
+      const idx = headers.findIndex(h => strip(norm(h)) === kc);
       if (idx >= 0) return idx;
     }
     for (const kw of kws) {
       const kc = norm(kw);
-      const idx = headers.findIndex(h => norm(h).replace(/[()tùychọn]/g, '').includes(kc));
+      const idx = headers.findIndex(h => strip(norm(h)).includes(kc));
       if (idx >= 0) return idx;
     }
     return -1;
@@ -572,14 +578,16 @@ function doValidate() {
   let cSku, cGia, cGG, cTen, cMaPLH, cTenPL;
 
   if (curFmt === 'eligible') {
-    cMaPLH = fc('Mã phân loại hàng');
-    cTenPL = fc('Tên phân loại hàng');
-    cGG    = fc('Giá Gốc');
-    cGia   = fc('Giá khuyến mãi');
-    cTen   = fc('Tên sản phẩm');
+    // Eligible Product List: tên cột cố định, dùng exact match
+    cMaPLH = exact('Mã phân loại hàng');
+    cTenPL = exact('Tên phân loại hàng');
+    cGG    = exact('Giá Gốc');
+    cGia   = exact('Giá khuyến mãi');
+    cTen   = exact('Tên sản phẩm');
     cSku   = -1; // không có SKU trực tiếp — sẽ tra qua mapping
   } else {
-    cSku   = fc('Số SKU Phân loại hàng', 'SKU Phân loại', 'Phân loại', 'SKU');
+    // Discount Nomination: có thể có hậu tố "(Tùy chọn)", dùng fc với strip
+    cSku   = fc('Số SKU Phân loại hàng', 'SKU Phân loại hàng', 'SKU Phân loại', 'SKU');
     cGG    = fc('Giá gốc');
     cGia   = fc('Giá đã giảm', 'Giảm');
     cTen   = fc('Tên Sản phẩm', 'Tên');
