@@ -455,26 +455,35 @@ function parseMappingFromXlsx(bytes) {
   }
 
   const headers = (raw[hIdx] || []).map(h => (h || '').toString().trim());
-  let cMaPL = -1, cSku = -1;
+  let cMaPL = -1, cSkuSimple = -1, cSkuVariant = -1;
 
-  // Exact match trước: tránh nhầm "SKU Sản phẩm" với "SKU"
+  // Tìm 3 cột quan trọng bằng exact match
+  // cSkuSimple  = "SKU"         (cột E) — sản phẩm KHÔNG có phân loại
+  // cSkuVariant = "SKU Sản phẩm" (cột F) — sản phẩm CÓ nhiều phân loại
+  // Ưu tiên: cSkuVariant trước, nếu trống thì dùng cSkuSimple
   for (let i = 0; i < headers.length; i++) {
     const n = norm(headers[i]);
-    if (n === 'mãphânloại' && cMaPL < 0) cMaPL = i;
-    if (n === 'sku'         && cSku  < 0) cSku  = i;
+    if (n === 'mãphânloại'   && cMaPL       < 0) cMaPL       = i;
+    if (n === 'sku'           && cSkuSimple  < 0) cSkuSimple  = i; // exact "SKU"
+    if (n === 'skusảnphẩm'   && cSkuVariant < 0) cSkuVariant = i; // "SKU Sản phẩm"
   }
-  // Fallback partial
-  if (cMaPL < 0) cMaPL = headers.findIndex(h => norm(h).includes('phânloại') && !norm(h).includes('hàng'));
-  if (cSku  < 0) cSku  = headers.findIndex(h => norm(h).includes('sku'));
+  // Fallback partial nếu exact không tìm được
+  if (cMaPL < 0)       cMaPL       = headers.findIndex(h => norm(h).includes('phânloại') && !norm(h).includes('hàng'));
+  if (cSkuSimple < 0)  cSkuSimple  = headers.findIndex(h => norm(h) === 'sku');
+  if (cSkuVariant < 0) cSkuVariant = headers.findIndex(h => norm(h).includes('sku') && norm(h).includes('sảnphẩm'));
 
-  if (cMaPL < 0 || cSku < 0) throw new Error(`Không tìm thấy cột "Mã Phân loại" hoặc "SKU" trong file mapping`);
+  if (cMaPL < 0 || (cSkuSimple < 0 && cSkuVariant < 0))
+    throw new Error(`Không tìm thấy cột "Mã Phân loại" hoặc cột SKU trong file mapping`);
 
   const map = {};
   for (let i = hIdx + 1; i < raw.length; i++) {
     const row = raw[i];
     if (!row) continue;
     const maPL = normSku(row[cMaPL] || '');
-    const sku  = normSku(row[cSku]  || '');
+    // Ưu tiên SKU Sản phẩm (cột F - cho SP có nhiều phân loại)
+    // Fallback về SKU (cột E - cho SP không có phân loại)
+    const sku = normSku(cSkuVariant >= 0 ? (row[cSkuVariant] || '') : '')
+             || normSku(cSkuSimple  >= 0 ? (row[cSkuSimple]  || '') : '');
     if (maPL && sku) map[maPL] = sku;
   }
   return map;
@@ -544,9 +553,15 @@ function doValidate() {
   const hasGiaKM = headers.some(h => norm(h) === 'giákhuyếnmãi');
   curFmt = hasGiaKM ? 'eligible' : 'discount';
 
-  // Eligible: 2 dòng metadata sau header (Bắt buộc/Không bắt buộc + mô tả cột)
+  // Eligible: có thể có 2 dòng metadata (Bắt buộc/Không bắt buộc + mô tả) HOẶC không có
+  // → Kiểm tra row hIdx+1: nếu chứa "bắtbuộc"/"khôngbắtbuộc" thì dataStart = hIdx+3, không thì hIdx+1
   // Discount: data bắt đầu ngay sau header
-  const dataStart = hIdx + (curFmt === 'eligible' ? 3 : 1);
+  let dataStart = hIdx + 1;
+  if (curFmt === 'eligible') {
+    const row1vals = (raw[hIdx + 1] || []).map(c => norm(c));
+    const hasMetaRow = row1vals.some(v => v === 'bắtbuộc' || v === 'khôngbắtbuộc');
+    dataStart = hIdx + (hasMetaRow ? 3 : 1);
+  }
 
   // Cảnh báo nếu eligible mà chưa có mapping
   if (curFmt === 'eligible' && (!mappingMap || Object.keys(mappingMap).length === 0)) {
