@@ -512,32 +512,27 @@ function doValidate() {
   const norm = h => (h || '').toString().toLowerCase().replace(/\s+/g, '');
 
   // ── Tìm dòng header ─────────────────────────────────────────────────
-  // Eligible Product List: header ở dòng 0 (có cột "Mã phân loại hàng")
-  // Discount Nomination:   header có thể ở bất kỳ dòng nào trong 15 dòng đầu
+  // Cả Discount Nomination và Eligible đều có header ở dòng 0.
+  // Tìm dòng chứa cột phân biệt: "Giá đã giảm" (discount) hoặc "Giá khuyến mãi" (eligible)
   let hIdx = 0;
-
-  // Trước tiên: kiểm tra dòng 0 có phải header của eligible không
-  const row0 = (raw[0] || []).map(c => norm(c));
-  const isEligibleHeader = row0.some(n => n === 'mãphânloạihàng');
-
-  if (!isEligibleHeader) {
-    // Tìm header discount nomination (có SKU)
-    for (let i = 0; i < Math.min(15, raw.length); i++) {
-      if ((raw[i] || []).some(c => {
-        const s = norm(c);
-        return s === 'sku' || s.includes('skuphânloại') || s.includes('skusảnphẩm')
-            || s.includes('mãsảnphẩm') || s.includes('sốskusảnphẩm');
-      })) { hIdx = i; break; }
+  for (let i = 0; i < Math.min(15, raw.length); i++) {
+    const cols = (raw[i] || []).map(c => norm(c));
+    if (cols.some(c => c === 'giáđãgiảm' || c === 'giákhuyếnmãi'
+                     || c === 'sku' || c.includes('skuphânloại'))) {
+      hIdx = i; break;
     }
   }
 
   const headers = (raw[hIdx] || []).map(h => (h || '').toString().trim());
 
   // ── Nhận dạng format ─────────────────────────────────────────────────
-  const hasMaPLH = headers.some(h => norm(h) === 'mãphânloạihàng');
-  curFmt = hasMaPLH ? 'eligible' : 'discount';
+  // Discount Nomination : có cột "Giá đã giảm"  (không có "Giá khuyến mãi")
+  // Eligible Product List: có cột "Giá khuyến mãi" (không có "Giá đã giảm")
+  const hasGiaKM = headers.some(h => norm(h) === 'giákhuyếnmãi');
+  curFmt = hasGiaKM ? 'eligible' : 'discount';
 
-  // Với eligible: bỏ qua 2 dòng mô tả sau header (dòng "Bắt buộc/Không bắt buộc" và mô tả cột)
+  // Eligible: 2 dòng metadata sau header (Bắt buộc/Không bắt buộc + mô tả cột)
+  // Discount: data bắt đầu ngay sau header
   const dataStart = hIdx + (curFmt === 'eligible' ? 3 : 1);
 
   // Cảnh báo nếu eligible mà chưa có mapping
