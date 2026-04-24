@@ -455,24 +455,25 @@ function parseMappingFromXlsx(bytes) {
   }
 
   const headers = (raw[hIdx] || []).map(h => (h || '').toString().trim());
-  let cMaPL = -1, cSkuSimple = -1, cSkuVariant = -1;
 
-  // Tìm 3 cột quan trọng bằng exact match
-  // cSkuSimple  = "SKU"         (cột E) — sản phẩm KHÔNG có phân loại
-  // cSkuVariant = "SKU Sản phẩm" (cột F) — sản phẩm CÓ nhiều phân loại
-  // Ưu tiên: cSkuVariant trước, nếu trống thì dùng cSkuSimple
+  // Cấu trúc file Mass Update:
+  // Cột E (index 4) = "SKU Sản phẩm" — dành cho SP KHÔNG có phân loại (single product)
+  // Cột F (index 5) = "SKU"           — dành cho SP CÓ nhiều phân loại (variation SKU)
+  // Ưu tiên: Cột F ("SKU") trước → nếu trống → lấy Cột E ("SKU Sản phẩm")
+  let cMaPL = -1, cSkuF = -1, cSkuE = -1;
+
   for (let i = 0; i < headers.length; i++) {
     const n = norm(headers[i]);
-    if (n === 'mãphânloại'   && cMaPL       < 0) cMaPL       = i;
-    if (n === 'sku'           && cSkuSimple  < 0) cSkuSimple  = i; // exact "SKU"
-    if (n === 'skusảnphẩm'   && cSkuVariant < 0) cSkuVariant = i; // "SKU Sản phẩm"
+    if (n === 'mãphânloại'  && cMaPL  < 0) cMaPL  = i; // "Mã Phân loại" (cột C)
+    if (n === 'sku'          && cSkuF  < 0) cSkuF  = i; // "SKU" exact (cột F) — variation SKU
+    if (n === 'skusảnphẩm'  && cSkuE  < 0) cSkuE  = i; // "SKU Sản phẩm" (cột E) — product SKU
   }
-  // Fallback partial nếu exact không tìm được
-  if (cMaPL < 0)       cMaPL       = headers.findIndex(h => norm(h).includes('phânloại') && !norm(h).includes('hàng'));
-  if (cSkuSimple < 0)  cSkuSimple  = headers.findIndex(h => norm(h) === 'sku');
-  if (cSkuVariant < 0) cSkuVariant = headers.findIndex(h => norm(h).includes('sku') && norm(h).includes('sảnphẩm'));
+  // Fallback partial
+  if (cMaPL < 0) cMaPL = headers.findIndex(h => norm(h).includes('phânloại') && !norm(h).includes('hàng'));
+  if (cSkuF < 0) cSkuF = headers.findIndex(h => norm(h) === 'sku');
+  if (cSkuE < 0) cSkuE = headers.findIndex(h => norm(h).includes('sku') && norm(h).includes('sảnphẩm'));
 
-  if (cMaPL < 0 || (cSkuSimple < 0 && cSkuVariant < 0))
+  if (cMaPL < 0 || (cSkuF < 0 && cSkuE < 0))
     throw new Error(`Không tìm thấy cột "Mã Phân loại" hoặc cột SKU trong file mapping`);
 
   const map = {};
@@ -480,11 +481,11 @@ function parseMappingFromXlsx(bytes) {
     const row = raw[i];
     if (!row) continue;
     const maPL = normSku(row[cMaPL] || '');
-    // Ưu tiên SKU Sản phẩm (cột F - cho SP có nhiều phân loại)
-    // Fallback về SKU (cột E - cho SP không có phân loại)
-    const sku = normSku(cSkuVariant >= 0 ? (row[cSkuVariant] || '') : '')
-             || normSku(cSkuSimple  >= 0 ? (row[cSkuSimple]  || '') : '');
-    if (maPL && sku) map[maPL] = sku;
+    if (!maPL) continue; // bỏ dòng metadata/trống
+    // Ưu tiên: SKU cột F (variation SKU) → fallback: SKU Sản phẩm cột E (product SKU)
+    const sku = normSku(cSkuF >= 0 ? (row[cSkuF] || '') : '')
+             || normSku(cSkuE >= 0 ? (row[cSkuE] || '') : '');
+    if (sku) map[maPL] = sku;
   }
   return map;
 }
