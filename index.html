@@ -191,6 +191,10 @@ tr.r-miss { background: #faf0ff !important; }
   <!-- Results -->
   <div id="resultSection">
     <div id="banner" class="banner"></div>
+    <div style="margin-bottom:10px;display:flex;align-items:center;gap:10px">
+      <span style="font-size:12px;color:#888">Loại file nhận dạng:</span>
+      <span id="fmtTag"></span>
+    </div>
     <div class="summary-grid" id="summaryGrid"></div>
 
     <div class="card" id="nccCard" style="display:none">
@@ -210,14 +214,7 @@ tr.r-miss { background: #faf0ff !important; }
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr>
-            <th>Dòng</th><th>SKU</th><th>Tên sản phẩm</th><th>NCC</th>
-            <th style="text-align:right">Giá gốc</th>
-            <th style="text-align:right">Giá đã giảm</th>
-            <th style="text-align:center">% Giảm TT</th>
-            <th style="text-align:center">% Cho phép</th>
-            <th>Trạng thái</th><th>Chi tiết lỗi</th>
-          </tr></thead>
+          <thead id="tableHead"></thead>
           <tbody id="tbody"></tbody>
         </table>
       </div>
@@ -240,6 +237,7 @@ let priceBytes = null;
 let allRows    = [];
 let curFilter  = 'all';
 let curPage    = 1;
+let curFmt     = 'discount'; // 'discount' | 'massupdate'
 const PG = 50;
 
 // ── Init ──────────────────────────────────────────────────────────────────
@@ -402,15 +400,6 @@ function handleFile(file) {
 }
 
 // ── Validation ───────────────────────────────────────────────────────────
-function guessCol(cols, keywords) {
-  for (const kw of keywords) {
-    const kc = kw.toLowerCase().replace(/\s+/g,'');
-    const f  = cols.find(c => c.toLowerCase().replace(/\s+/g,'').replace(/[()]/g,'').includes(kc));
-    if (f) return f;
-  }
-  return null;
-}
-
 function runCheck() {
   if (!priceBytes) return;
   if (!masterMap || Object.keys(masterMap).length === 0) {
@@ -424,49 +413,119 @@ function runCheck() {
 
 function doValidate() {
   const tolerance = parseFloat(localStorage.getItem(LS_TOL) || DEFAULT_TOL);
-  const wb   = XLSX.read(priceBytes, { type: 'array' });
-  const ws   = wb.Sheets[wb.SheetNames[0]];
-  const rows = XLSX.utils.sheet_to_json(ws, { defval: null });
-  const cols = Object.keys(rows[0] || {});
+  const wb  = XLSX.read(priceBytes, { type: 'array' });
+  const ws  = wb.Sheets[wb.SheetNames[0]];
+  // Đọc toàn bộ dưới dạng mảng thô để tự tìm dòng header
+  const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
 
-  const colSku = guessCol(cols, ['skuphânloại','sốskuphânloại','skuphanloai','phânloại']);
-  const colGG  = guessCol(cols, ['giágốc','giagoc']);
-  const colGD  = guessCol(cols, ['giađãgiảm','giảm','giagiam']);
-  const colTen = guessCol(cols, ['tênsảnphẩm','tên','ten']);
+  // ── Tìm dòng header (Shopee có thể có vài dòng metadata ở đầu) ────────
+  let hIdx = 0;
+  for (let i = 0; i < Math.min(15, raw.length); i++) {
+    if ((raw[i] || []).some(c => {
+      const s = (c || '').toString().toLowerCase().replace(/\s+/g, '');
+      return s === 'sku' || s.includes('skuphânloại') || s.includes('skusảnphẩm')
+          || s.includes('mãsảnphẩm') || s.includes('sốskusảnphẩm');
+    })) { hIdx = i; break; }
+  }
 
-  allRows = rows.map((row, i) => {
-    const sku  = normSku(row[colSku] || '');
-    const gg   = parseFloat(String(row[colGG]  || '').replace(/,/g,'')) || null;
-    const gd   = parseFloat(String(row[colGD]  || '').replace(/,/g,'')) || null;
-    const ten  = colTen ? (row[colTen] || '') : '';
+  const headers = (raw[hIdx] || []).map(h => (h || '').toString().trim());
+
+  // ── Nhận dạng format ─────────────────────────────────────────────────
+  // Format "Mass update sales info": có cột "Giá" (chính xác) hoặc "Mã Phân loại"
+  // Format "Discount nomination":    có cột "Giá đã giảm", "Giá gốc (Tùy chọn)"
+  const norm = h => h.toLowerCase().replace(/\s+/g, '');
+  const hasGiaExact = headers.some(h => norm(h) === 'giá');
+  const hasMaPL     = headers.some(h => norm(h) === 'mãphânloại');
+  curFmt = (hasGiaExact || hasMaPL) ? 'massupdate' : 'discount';
+
+  // ── Tìm chỉ số cột (exact match trước, rồi partial) ──────────────────
+  const fc = (...kws) => {
+    for (const kw of kws) {
+      const kc = norm(kw);
+      const idx = headers.findIndex(h => norm(h).replace(/[()tùychọn]/g, '') === kc);
+      if (idx >= 0) return idx;
+    }
+    for (const kw of kws) {
+      const kc = norm(kw);
+      const idx = headers.findIndex(h => norm(h).replace(/[()tùychọn]/g, '').includes(kc));
+      if (idx >= 0) return idx;
+    }
+    return -1;
+  };
+
+  let cSku, cGia, cGG, cTen, cMaPL;
+  if (curFmt === 'massupdate') {
+    cMaPL = fc('Mã Phân loại');
+    cSku  = fc('SKU');           // exact "SKU" (variation barcode), không phải "SKU Sản phẩm"
+    cGia  = fc('Giá');           // exact "Giá"
+    cGG   = -1;                  // không có Giá gốc trong file này
+    cTen  = fc('Tên Sản phẩm', 'Tên');
+  } else {
+    cSku  = fc('Số SKU Phân loại hàng', 'SKU Phân loại', 'Phân loại', 'SKU');
+    cGG   = fc('Giá gốc');
+    cGia  = fc('Giá đã giảm', 'Giảm');
+    cTen  = fc('Tên Sản phẩm', 'Tên');
+    cMaPL = -1;
+  }
+
+  // ── Duyệt từng dòng dữ liệu ──────────────────────────────────────────
+  allRows = [];
+  for (let i = hIdx + 1; i < raw.length; i++) {
+    const row = raw[i];
+    if (!row || !row.some(c => c !== null && c !== '')) continue; // bỏ dòng trống
+
+    const sku  = normSku(row[cSku] || '');
+    const giaF = parseFloat(String(row[cGia] || '').replace(/,/g, '')) || null;
+    const ggF  = cGG >= 0 ? (parseFloat(String(row[cGG] || '').replace(/,/g, '')) || null) : null;
+    const ten  = cTen >= 0 ? (row[cTen] || '').toString() : '';
+    const maPL = cMaPL >= 0 ? (row[cMaPL] || '').toString() : '';
     const m    = sku ? masterMap[sku] : null;
-    const errs = [];
-    let type   = 'ok';
+    const errs = []; let type = 'ok';
 
     if (!sku) {
+      if (!giaF && !ten) continue; // dòng hoàn toàn rỗng
       type = 'warn'; errs.push('Không có SKU');
     } else if (!m) {
       type = 'miss'; errs.push('SKU không có trong dữ liệu chuẩn');
     } else {
-      if (gg && m.giaGoc && Math.abs(gg - m.giaGoc) > 1)
-        errs.push(`Giá gốc sai: file=${fmtN(gg)} | chuẩn=${fmtN(m.giaGoc)}`);
-      if (!gd || gd <= 0) errs.push('Giá đã giảm trống/= 0');
-      else if (gg && gd > gg) errs.push('Giá đã giảm > Giá gốc');
-      const ref = (m.giaGoc || gg);
-      if (ref && gd && ref > 0) {
-        const pct = (ref - gd) / ref * 100;
-        if (m.pctMax !== null && pct > m.pctMax + tolerance)
-          errs.push(`% giảm ${pct.toFixed(1)}% vượt mức NCC (${m.pctMax}%)`);
+      if (curFmt === 'discount') {
+        // Kiểm tra giá gốc
+        if (ggF && m.giaGoc && Math.abs(ggF - m.giaGoc) > 1)
+          errs.push(`Giá gốc sai: file=${fmtN(ggF)} | chuẩn=${fmtN(m.giaGoc)}`);
+        // Kiểm tra giá đã giảm
+        if (!giaF || giaF <= 0) errs.push('Giá đã giảm trống/= 0');
+        else if (ggF && giaF > ggF) errs.push('Giá đã giảm > Giá gốc');
+        const ref = m.giaGoc || ggF;
+        if (ref && giaF && ref > 0) {
+          const pct = (ref - giaF) / ref * 100;
+          if (m.pctMax !== null && pct > m.pctMax + tolerance)
+            errs.push(`% giảm ${pct.toFixed(1)}% vượt mức NCC (${m.pctMax}%)`);
+        }
+      } else {
+        // mass update: "Giá" = giá bán cuối, so với Giá gốc trong master
+        if (!giaF || giaF <= 0) errs.push('Giá bán trống/= 0');
+        else if (m.giaGoc && giaF > m.giaGoc)
+          errs.push(`Giá bán (${fmtN(giaF)}) > Giá gốc chuẩn (${fmtN(m.giaGoc)})`);
+        const ref = m.giaGoc;
+        if (ref && giaF && ref > 0) {
+          const pct = (ref - giaF) / ref * 100;
+          if (m.pctMax !== null && pct > m.pctMax + tolerance)
+            errs.push(`% giảm ${pct.toFixed(1)}% vượt mức NCC (${m.pctMax}%)`);
+        }
       }
       if (errs.length) type = 'err';
     }
 
-    const ref2 = m?.giaGoc || gg;
-    const pct  = (ref2 && gd && ref2 > 0) ? (ref2 - gd) / ref2 * 100 : null;
+    const ref2 = m?.giaGoc || ggF;
+    const pct  = (ref2 && giaF && ref2 > 0) ? (ref2 - giaF) / ref2 * 100 : null;
 
-    return { rowNum: i+2, sku, ten: ten || m?.tenSP || '', ncc: m?.ncc || '—',
-             gg, ggMaster: m?.giaGoc, gd, pct, pctMax: m?.pctMax, errs, type };
-  });
+    allRows.push({
+      rowNum: i + 1, // Excel row (1-indexed)
+      sku, ten: ten || m?.tenSP || '', ncc: m?.ncc || '—',
+      gg: ggF, ggMaster: m?.giaGoc, gd: giaF, pct, pctMax: m?.pctMax,
+      maPL, errs, type
+    });
+  }
 
   renderResults();
   document.getElementById('loadingRow').style.display = 'none';
@@ -486,12 +545,18 @@ function renderResults() {
     ? `⚠️ Phát hiện ${nErr} dòng lỗi giá${nMiss ? ' + '+nMiss+' SKU không có chuẩn' : ''} — Cần xử lý trước khi đẩy sàn!`
     : `✅ Tất cả ${total.toLocaleString()} dòng hợp lệ — Có thể đẩy sàn!`;
 
+  const fmtLabel = curFmt === 'massupdate'
+    ? '<span style="background:#e8f4fd;color:#2980b9;border:1.5px solid #aed6f1;padding:2px 10px;border-radius:12px;font-size:11px;font-weight:700">📋 Mass Update Sales Info</span>'
+    : '<span style="background:#eaf5ea;color:#27ae60;border:1.5px solid #a9dfbf;padding:2px 10px;border-radius:12px;font-size:11px;font-weight:700">🏷️ Discount Nomination</span>';
   document.getElementById('summaryGrid').innerHTML = `
     <div class="stat c-total"><div class="num">${total.toLocaleString()}</div><div class="lbl">Tổng dòng</div></div>
     <div class="stat c-err"><div class="num">${nErr}</div><div class="lbl">Lỗi giá</div></div>
     <div class="stat c-miss"><div class="num">${nMiss}</div><div class="lbl">SKU không có chuẩn</div></div>
     <div class="stat c-ok"><div class="num">${nOk}</div><div class="lbl">Hợp lệ</div></div>
     <div class="stat c-pct"><div class="num">${((nErr+nMiss)/total*100).toFixed(1)}%</div><div class="lbl">Tỷ lệ lỗi</div></div>`;
+  // Hiển thị format được nhận dạng
+  const fmtEl = document.getElementById('fmtTag');
+  if (fmtEl) fmtEl.innerHTML = fmtLabel;
 
   // NCC breakdown
   const byNcc = {};
@@ -519,6 +584,28 @@ function getFiltered() {
 }
 
 function renderTable() {
+  // ── Header động theo format ──────────────────────────────────────────
+  const thead = document.getElementById('tableHead');
+  if (curFmt === 'massupdate') {
+    thead.innerHTML = `<tr>
+      <th>Dòng</th><th>Mã Phân loại</th><th>SKU</th><th>Tên sản phẩm</th><th>NCC</th>
+      <th style="text-align:right">Giá gốc (chuẩn)</th>
+      <th style="text-align:right">Giá bán</th>
+      <th style="text-align:center">% Giảm TT</th>
+      <th style="text-align:center">% Cho phép</th>
+      <th>Trạng thái</th><th>Chi tiết lỗi</th>
+    </tr>`;
+  } else {
+    thead.innerHTML = `<tr>
+      <th>Dòng</th><th>SKU</th><th>Tên sản phẩm</th><th>NCC</th>
+      <th style="text-align:right">Giá gốc</th>
+      <th style="text-align:right">Giá đã giảm</th>
+      <th style="text-align:center">% Giảm TT</th>
+      <th style="text-align:center">% Cho phép</th>
+      <th>Trạng thái</th><th>Chi tiết lỗi</th>
+    </tr>`;
+  }
+
   const rows  = getFiltered();
   const maxPg = Math.max(1, Math.ceil(rows.length/PG));
   curPage     = Math.min(curPage, maxPg);
@@ -526,28 +613,44 @@ function renderTable() {
   const page  = rows.slice(s, s+PG);
 
   document.getElementById('tbody').innerHTML = page.map(r => {
-    const cls  = r.type==='err'?'r-err':r.type==='miss'?'r-miss':'';
-    const badge = r.type==='ok'   ? `<span class="badge b-ok">✅ Hợp lệ</span>`
-                : r.type==='err'  ? `<span class="badge b-err">❌ Lỗi giá</span>`
-                :                   `<span class="badge b-miss">🔍 Không có chuẩn</span>`;
+    const cls   = r.type==='err'?'r-err':r.type==='miss'?'r-miss':'';
+    const badge = r.type==='ok'  ? `<span class="badge b-ok">✅ Hợp lệ</span>`
+                : r.type==='err' ? `<span class="badge b-err">❌ Lỗi giá</span>`
+                :                  `<span class="badge b-miss">🔍 Không có chuẩn</span>`;
     const errHtml = r.errs.length
       ? r.errs.map(e=>`<div class="${r.type==='miss'?'miss-txt':'err-txt'}">• ${e}</div>`).join('')
       : `<span style="color:#27ae60;font-size:11px">OK</span>`;
     const pctStyle = r.type==='err' ? 'color:#e63946;font-weight:700' : r.type==='ok' ? 'color:#27ae60' : '';
-    const ggErrStyle = (r.gg && r.ggMaster && Math.abs(r.gg-r.ggMaster)>1) ? 'color:#e63946;font-weight:700' : '';
 
-    return `<tr class="${cls}">
-      <td style="color:#999;font-size:11px">${r.rowNum}</td>
-      <td style="font-size:11px;font-family:monospace">${r.sku||'—'}</td>
-      <td><div class="pname" title="${r.ten}">${r.ten||'—'}</div></td>
-      <td style="font-size:11px;white-space:nowrap">${r.ncc}</td>
-      <td style="text-align:right;font-size:12px;${ggErrStyle}">${fmtN(r.gg)}</td>
-      <td style="text-align:right;font-weight:700">${fmtN(r.gd)}</td>
-      <td style="text-align:center;${pctStyle}">${r.pct!=null?r.pct.toFixed(1)+'%':'—'}</td>
-      <td style="text-align:center;color:#555">${r.pctMax!=null?r.pctMax+'%':'—'}</td>
-      <td>${badge}</td>
-      <td style="min-width:200px">${errHtml}</td>
-    </tr>`;
+    if (curFmt === 'massupdate') {
+      return `<tr class="${cls}">
+        <td style="color:#999;font-size:11px">${r.rowNum}</td>
+        <td style="font-size:11px;font-family:monospace;color:#888">${r.maPL||'—'}</td>
+        <td style="font-size:11px;font-family:monospace">${r.sku||'—'}</td>
+        <td><div class="pname" title="${r.ten}">${r.ten||'—'}</div></td>
+        <td style="font-size:11px;white-space:nowrap">${r.ncc}</td>
+        <td style="text-align:right;font-size:12px;color:#555">${fmtN(r.ggMaster)}</td>
+        <td style="text-align:right;font-weight:700">${fmtN(r.gd)}</td>
+        <td style="text-align:center;${pctStyle}">${r.pct!=null?r.pct.toFixed(1)+'%':'—'}</td>
+        <td style="text-align:center;color:#555">${r.pctMax!=null?r.pctMax+'%':'—'}</td>
+        <td>${badge}</td>
+        <td style="min-width:200px">${errHtml}</td>
+      </tr>`;
+    } else {
+      const ggErrStyle = (r.gg && r.ggMaster && Math.abs(r.gg-r.ggMaster)>1) ? 'color:#e63946;font-weight:700' : '';
+      return `<tr class="${cls}">
+        <td style="color:#999;font-size:11px">${r.rowNum}</td>
+        <td style="font-size:11px;font-family:monospace">${r.sku||'—'}</td>
+        <td><div class="pname" title="${r.ten}">${r.ten||'—'}</div></td>
+        <td style="font-size:11px;white-space:nowrap">${r.ncc}</td>
+        <td style="text-align:right;font-size:12px;${ggErrStyle}">${fmtN(r.gg)}</td>
+        <td style="text-align:right;font-weight:700">${fmtN(r.gd)}</td>
+        <td style="text-align:center;${pctStyle}">${r.pct!=null?r.pct.toFixed(1)+'%':'—'}</td>
+        <td style="text-align:center;color:#555">${r.pctMax!=null?r.pctMax+'%':'—'}</td>
+        <td>${badge}</td>
+        <td style="min-width:200px">${errHtml}</td>
+      </tr>`;
+    }
   }).join('');
 
   document.getElementById('pageInfo').textContent = `Hiển thị ${s+1}–${Math.min(s+PG,rows.length)} / ${rows.length} dòng`;
@@ -571,23 +674,48 @@ function setFilter(f,el){curFilter=f;curPage=1;document.querySelectorAll('.tab')
 
 // ── Export ───────────────────────────────────────────────────────────────
 function exportFile() {
-  const errs = allRows.filter(r=>r.type==='err'||r.type==='miss');
-  if (!errs.length){alert('Không có lỗi để xuất!');return;}
-  const data = errs.map(r=>({
-    'Dòng':r.rowNum,'Mã SKU':r.sku,'Tên sản phẩm':r.ten,'NCC':r.ncc,
-    'Giá gốc (file)':r.gg,'Giá gốc (chuẩn)':r.ggMaster??'',
-    'Giá đã giảm':r.gd,
-    '% Giảm TT':r.pct!=null?parseFloat(r.pct.toFixed(2)):'',
-    '% Cho phép':r.pctMax??'',
-    'Loại lỗi':r.type==='miss'?'SKU không có chuẩn':'Lỗi giá',
-    'Chi tiết':r.errs.join(' | ')
-  }));
-  const ws=XLSX.utils.json_to_sheet(data);
-  ws['!cols']=[6,14,40,18,12,12,12,10,10,18,50].map(w=>({wch:w}));
-  const wb=XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb,ws,'Lỗi');
-  const d=new Date();
-  XLSX.writeFile(wb,`loi_gia_${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}.xlsx`);
+  const errs = allRows.filter(r => r.type==='err' || r.type==='miss');
+  if (!errs.length) { alert('Không có lỗi để xuất!'); return; }
+
+  let data, colWidths;
+  if (curFmt === 'massupdate') {
+    data = errs.map(r => ({
+      'Dòng': r.rowNum,
+      'Mã Phân loại': r.maPL,
+      'Mã SKU': r.sku,
+      'Tên sản phẩm': r.ten,
+      'NCC': r.ncc,
+      'Giá gốc (chuẩn)': r.ggMaster ?? '',
+      'Giá bán': r.gd,
+      '% Giảm TT': r.pct != null ? parseFloat(r.pct.toFixed(2)) : '',
+      '% Cho phép': r.pctMax ?? '',
+      'Loại lỗi': r.type==='miss' ? 'SKU không có chuẩn' : 'Lỗi giá',
+      'Chi tiết': r.errs.join(' | ')
+    }));
+    colWidths = [6, 16, 14, 40, 18, 12, 12, 10, 10, 18, 50];
+  } else {
+    data = errs.map(r => ({
+      'Dòng': r.rowNum,
+      'Mã SKU': r.sku,
+      'Tên sản phẩm': r.ten,
+      'NCC': r.ncc,
+      'Giá gốc (file)': r.gg,
+      'Giá gốc (chuẩn)': r.ggMaster ?? '',
+      'Giá đã giảm': r.gd,
+      '% Giảm TT': r.pct != null ? parseFloat(r.pct.toFixed(2)) : '',
+      '% Cho phép': r.pctMax ?? '',
+      'Loại lỗi': r.type==='miss' ? 'SKU không có chuẩn' : 'Lỗi giá',
+      'Chi tiết': r.errs.join(' | ')
+    }));
+    colWidths = [6, 14, 40, 18, 12, 12, 12, 10, 10, 18, 50];
+  }
+
+  const ws = XLSX.utils.json_to_sheet(data);
+  ws['!cols'] = colWidths.map(w => ({ wch: w }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Lỗi');
+  const d = new Date();
+  XLSX.writeFile(wb, `loi_gia_${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}.xlsx`);
 }
 
 function fmtN(n){return(n!=null&&!isNaN(n))?Math.round(n).toLocaleString('vi-VN')+'đ':'—';}
