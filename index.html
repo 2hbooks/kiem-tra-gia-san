@@ -182,9 +182,23 @@ tr.r-miss { background: #faf0ff !important; }
         <small id="mappingSub">Upload file <em>Mass Update Sales Info</em> (.xlsx) — cần thiết để kiểm tra file Eligible Product List</small>
       </div>
     </div>
-    <span class="mapping-label">MAPPING</span>
+    <span class="mapping-label">NGUỒN 2</span>
     <button class="btn-refresh" onclick="document.getElementById('mappingInput').click()" style="background:#f6fff0;color:#27ae60;border-color:#b2dfb2">📂 Tải file mapping</button>
     <input type="file" id="mappingInput" accept=".xlsx,.xls" style="display:none">
+  </div>
+
+  <!-- 3. Combo source bar (DS SanPham → Mã Phân loại → thành phần combo) -->
+  <div class="master-bar mapping-bar" style="border-color:#e8e0f8;background:#fdfaff;">
+    <div class="master-status">
+      <div class="status-dot dot-idle" id="comboDot"></div>
+      <div class="master-info">
+        <strong id="comboText">Chưa tải file danh sách sản phẩm</strong>
+        <small id="comboSub">Upload file <em>DS SanPham MAP Salework</em> (.xlsx) — dùng để validate giá combo</small>
+      </div>
+    </div>
+    <span class="mapping-label" style="background:#f5f0ff;color:#7b5ea7;border-color:#c9b8f0">NGUỒN 3</span>
+    <button class="btn-refresh" onclick="document.getElementById('comboInput').click()" style="background:#f8f5ff;color:#7b5ea7;border-color:#c9b8f0">📂 Tải file combo</button>
+    <input type="file" id="comboInput" accept=".xlsx,.xls" style="display:none">
   </div>
 
   <!-- 3. Upload validation file -->
@@ -259,12 +273,15 @@ let masterMap   = null;
 let masterMeta  = { skus: 0, nccs: 0, loadedAt: null };
 let mappingMap  = null;   // Mã Phân loại → SKU (from Mass Update file)
 let mappingMeta = { count: 0 };
+let comboMap    = null;   // Mã Phân loại → [{sku, qty}] (from DS SanPham file)
+let comboMeta   = { count: 0, singles: 0 };
 let priceBytes  = null;
 let allRows     = [];
 let curFilter   = 'all';
 let curPage     = 1;
 let curFmt      = 'discount'; // 'discount' | 'eligible'
 const PG = 50;
+const COMBO_BONUS_PCT = 2; // combo được thêm 2% discount so với SP lẻ
 
 // ── Init ──────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
@@ -276,6 +293,7 @@ window.addEventListener('DOMContentLoaded', () => {
   else { setStatus('err', 'Chưa cấu hình nguồn dữ liệu', 'Bấm ⚙ Cấu hình để nhập link Google Sheets'); toggleConfig(); }
   setupDrop();
   setupMappingInput();
+  setupComboInput();
 });
 
 // ── Config UI ────────────────────────────────────────────────────────────
@@ -491,6 +509,104 @@ function parseMappingFromXlsx(bytes) {
   return map;
 }
 
+// ── Combo source file (DS SanPham MAP Salework) ───────────────────────────
+function setupComboInput() {
+  document.getElementById('comboInput').addEventListener('change', e => {
+    if (e.target.files[0]) handleComboFile(e.target.files[0]);
+  });
+}
+
+function handleComboFile(file) {
+  const dot  = document.getElementById('comboDot');
+  const txt  = document.getElementById('comboText');
+  const sub  = document.getElementById('comboSub');
+  dot.className = 'status-dot dot-loading';
+  txt.textContent = 'Đang đọc file...';
+
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const bytes = new Uint8Array(e.target.result);
+      const result = parseComboFromXlsx(bytes);
+      comboMap  = result.map;
+      comboMeta = { count: result.comboCount, singles: result.singleCount, fileName: file.name };
+      dot.className = 'status-dot dot-ok';
+      txt.textContent = `✅ ${comboMeta.count.toLocaleString()} combo đã khai báo (${comboMeta.singles.toLocaleString()} SP lẻ bỏ qua)`;
+      sub.textContent = file.name;
+    } catch(err) {
+      dot.className = 'status-dot dot-err';
+      txt.textContent = '❌ Không đọc được file combo';
+      sub.textContent = err.message;
+      console.error(err);
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function parseComboFromXlsx(bytes) {
+  const wb  = XLSX.read(bytes, { type: 'array' });
+  const norm = s => (s || '').toString().toLowerCase().replace(/\s+/g, '');
+
+  const map = {};         // mãPhânLoại → [{sku, qty}]
+  let comboCount  = 0;
+  let singleCount = 0;
+
+  // Duyệt tất cả sheets (mỗi sheet = 1 shop)
+  for (const sheetName of wb.SheetNames) {
+    const ws  = wb.Sheets[sheetName];
+    const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
+    if (!raw || raw.length < 2) continue;
+
+    // Tìm header row — có "Mã phân loại" ở cột F
+    let hIdx = -1;
+    for (let i = 0; i < Math.min(5, raw.length); i++) {
+      const ns = (raw[i] || []).map(c => norm(c));
+      if (ns.some(n => n.includes('mãphânloại') || n.includes('phânloại'))) {
+        hIdx = i; break;
+      }
+    }
+    if (hIdx < 0) continue;
+
+    const headers = (raw[hIdx] || []).map(h => norm(h));
+    // Cột F (index 5) = Mã phân loại | Cột H (index 7) = SKU Shopee | Cột I (index 8) = Mã Salework | Cột J (index 9) = Số lượng combo
+    const cMaPL = headers.findIndex(h => h.includes('mãphânloại') || h.includes('phânloại'));
+    const cSkuSP= headers.findIndex(h => h.includes('skushopee') || h === 'skushopee');
+    const cComp = headers.findIndex(h => h.includes('salework') || h.includes('mãsalework') || h.includes('liênkết'));
+    const cQty  = headers.findIndex(h => h.includes('sốlượng') || h.includes('combo'));
+
+    if (cMaPL < 0 || cComp < 0) continue;
+
+    for (let i = hIdx + 1; i < raw.length; i++) {
+      const row = raw[i];
+      if (!row) continue;
+      const maPL   = normSku(row[cMaPL] || '');
+      if (!maPL) continue;
+
+      const skuSP  = normSku(cSkuSP >= 0 ? (row[cSkuSP] || '') : '');
+      const compSku = normSku(cComp  >= 0 ? (row[cComp]  || '') : '');
+      const qty    = cQty >= 0 ? (parseFloat(String(row[cQty] || '0')) || 0) : 1;
+
+      // SP lẻ: SKU Shopee (H) có giá trị → đã có trong mappingMap từ Mass Update, bỏ qua
+      if (skuSP) {
+        singleCount++;
+        continue;
+      }
+
+      // Combo: SKU Shopee (H) trống, Mã Salework (I) có giá trị và số lượng > 0
+      if (compSku && qty > 0) {
+        if (!map[maPL]) {
+          map[maPL] = [];
+          comboCount++;
+        }
+        map[maPL].push({ sku: compSku, qty });
+      }
+      // qty = 0 hoặc compSku rỗng → combo chưa khai báo, bỏ qua (sẽ báo lỗi khi validate)
+    }
+  }
+
+  return { map, comboCount, singleCount };
+}
+
 // ── Price file upload ─────────────────────────────────────────────────────
 function setupDrop() {
   const zone = document.getElementById('uploadZone');
@@ -648,22 +764,83 @@ function doValidate() {
     const errs = [];
     let type = 'ok';
 
+    // Thông tin bổ sung cho combo (sẽ dùng khi render bảng)
+    let isCombo = false, comboGiaGoc = null, comboPctMax = null, comboComponents = null;
+
     if (curFmt === 'eligible') {
       if (!maPLH) {
         if (!giaF && !ten) continue; // dòng hoàn toàn rỗng
         type = 'warn'; errs.push('Không có Mã phân loại hàng');
+
       } else if (!sku) {
-        type = 'nomap';
-        errs.push(mappingMap
-          ? 'Chưa có barcode — cần cập nhật SKU trong Shopee'
-          : 'Chưa tải file mapping — không tra được SKU');
+        // Không có trong Mass Update mapping → kiểm tra có phải combo không
+        const comboComps = comboMap ? comboMap[maPLH] : null;
+
+        if (comboComps && comboComps.length > 0) {
+          // ── COMBO VALIDATION ──────────────────────────────────────
+          isCombo = true;
+          comboComponents = comboComps;
+
+          // Tính Giá gốc combo = sum(giaGoc × qty) của từng thành phần
+          let calcGiaGoc = 0;
+          let calcOk = true;
+          const missingSkus = [];
+          const pctVals = [];
+          const nccSet = new Set();
+
+          for (const comp of comboComps) {
+            const mc = masterMap[comp.sku];
+            if (!mc) { calcOk = false; missingSkus.push(comp.sku); continue; }
+            calcGiaGoc += (mc.giaGoc || 0) * comp.qty;
+            if (mc.pctMax !== null) pctVals.push(mc.pctMax);
+            if (mc.ncc) nccSet.add(mc.ncc);
+          }
+
+          comboGiaGoc = calcGiaGoc;
+          // pctMax combo = min(pctMax thành phần) + COMBO_BONUS_PCT
+          comboPctMax = pctVals.length > 0 ? Math.min(...pctVals) + COMBO_BONUS_PCT : null;
+
+          if (!calcOk) {
+            type = 'nomaster';
+            errs.push(`Combo: ${missingSkus.length} thành phần chưa có trong dữ liệu chuẩn (${missingSkus.join(', ')})`);
+          } else if (!calcGiaGoc || calcGiaGoc <= 0) {
+            type = 'nomaster';
+            errs.push('Combo: Giá gốc thành phần = 0, không thể validate');
+          } else {
+            // Validate giá combo
+            if (!giaF || giaF <= 0) {
+              errs.push('Giá khuyến mãi combo trống/= 0');
+            } else {
+              if (giaF > calcGiaGoc)
+                errs.push(`Giá KM combo (${fmtN(giaF)}) > Giá gốc combo (${fmtN(calcGiaGoc)})`);
+              const pct = (calcGiaGoc - giaF) / calcGiaGoc * 100;
+              if (comboPctMax !== null && pct > comboPctMax + tolerance)
+                errs.push(`% giảm ${pct.toFixed(1)}% vượt mức cho phép (${comboPctMax}% = min NCC ${Math.min(...pctVals)}% + ${COMBO_BONUS_PCT}% bonus combo)`);
+            }
+            if (errs.length) type = 'err';
+            // Gán thêm thông tin NCC và tên cho row
+            sku = 'COMBO';
+            // ncc sẽ được gán sau
+          }
+
+        } else if (comboMap && maPLH in comboMap) {
+          // comboMap có key nhưng array rỗng → combo chưa khai báo thành phần
+          type = 'nomap';
+          errs.push('Combo chưa khai báo thành phần trong file DS SanPham');
+        } else {
+          // Không phải combo, không có trong Mass Update
+          type = 'nomap';
+          errs.push(mappingMap
+            ? 'Chưa có barcode — cần cập nhật SKU trong Shopee'
+            : 'Chưa tải file mapping — không tra được SKU');
+        }
+
       } else if (!m) {
         type = 'nomaster'; errs.push('Có barcode nhưng chưa có trong dữ liệu chuẩn (Google Sheets)');
       } else {
-        // Kiểm tra Giá Gốc
+        // SP lẻ hợp lệ — validate bình thường
         if (ggF && m.giaGoc && Math.abs(ggF - m.giaGoc) > 1)
           errs.push(`Giá Gốc sai: file=${fmtN(ggF)} | chuẩn=${fmtN(m.giaGoc)}`);
-        // Kiểm tra Giá khuyến mãi
         if (!giaF || giaF <= 0) errs.push('Giá khuyến mãi trống/= 0');
         else {
           const ref = m.giaGoc || ggF;
@@ -676,6 +853,7 @@ function doValidate() {
         }
         if (errs.length) type = 'err';
       }
+
     } else {
       // discount nomination
       if (!sku) {
@@ -698,8 +876,17 @@ function doValidate() {
       }
     }
 
-    const ref2 = m?.giaGoc || ggF;
+    // Tính pct và ref để hiển thị
+    const refForPct = isCombo ? comboGiaGoc : (m?.giaGoc || ggF);
+    const ref2 = refForPct;
     const pct  = (ref2 && giaF && ref2 > 0) ? (ref2 - giaF) / ref2 * 100 : null;
+
+    // NCC cho combo: ghép các NCC thành phần
+    let nccDisplay = m?.ncc || '—';
+    if (isCombo && comboComponents) {
+      const nccSet = new Set(comboComponents.map(c => masterMap[c.sku]?.ncc).filter(Boolean));
+      nccDisplay = nccSet.size > 0 ? [...nccSet].join(', ') : '—';
+    }
 
     allRows.push({
       rowNum: i + 1,
@@ -707,12 +894,14 @@ function doValidate() {
       maPLH,
       tenPL,
       ten: ten || m?.tenSP || '',
-      ncc: m?.ncc || '—',
-      gg: ggF,
-      ggMaster: m?.giaGoc,
+      ncc: nccDisplay,
+      gg: isCombo ? comboGiaGoc : ggF,
+      ggMaster: isCombo ? comboGiaGoc : m?.giaGoc,
       gd: giaF,
       pct,
-      pctMax: m?.pctMax,
+      pctMax: isCombo ? comboPctMax : m?.pctMax,
+      isCombo,
+      comboComponents,
       errs,
       type
     });
@@ -731,6 +920,8 @@ function renderResults() {
   const nNoMaster= allRows.filter(r => r.type==='nomaster').length;
   const nMiss    = nNoMap + nNoMaster; // tổng không validate được
   const nOk      = allRows.filter(r => r.type==='ok').length;
+  const nCombo   = allRows.filter(r => r.isCombo && r.type==='ok').length;
+  const nComboErr= allRows.filter(r => r.isCombo && r.type==='err').length;
 
   const b = document.getElementById('banner');
   b.className = 'banner ' + ((nErr+nMiss) ? 'banner-err' : 'banner-ok');
@@ -752,11 +943,14 @@ function renderResults() {
 
   // Summary grid — eligible có thêm 2 ô, discount giữ nguyên
   if (curFmt === 'eligible') {
+    const comboInfo = (nCombo+nComboErr) > 0
+      ? `<div class="stat" style="background:#fff5e8;border-color:#f5cba7"><div class="num" style="color:#e67e22">${nCombo+nComboErr}</div><div class="lbl">Combo (${nComboErr} lỗi)</div></div>` : '';
     document.getElementById('summaryGrid').innerHTML = `
       <div class="stat c-total"><div class="num">${total.toLocaleString()}</div><div class="lbl">Tổng dòng</div></div>
       <div class="stat c-err"><div class="num">${nErr}</div><div class="lbl">Lỗi giá</div></div>
       <div class="stat c-miss"><div class="num">${nNoMap}</div><div class="lbl">Chưa có barcode</div></div>
       <div class="stat" style="background:#f5f0ff;border-color:#c9b8f0"><div class="num" style="color:#7b5ea7">${nNoMaster}</div><div class="lbl">Barcode chưa trong GG Sheet</div></div>
+      ${comboInfo}
       <div class="stat c-ok"><div class="num">${nOk}</div><div class="lbl">Hợp lệ</div></div>
       <div class="stat c-pct"><div class="num">${total>0?((nErr+nMiss)/total*100).toFixed(1):0}%</div><div class="lbl">Tỷ lệ lỗi</div></div>`;
   } else {
@@ -848,26 +1042,42 @@ function renderTable() {
   document.getElementById('tbody').innerHTML = page.map(r => {
     const isMiss = r.type==='nomap'||r.type==='nomaster';
     const cls   = r.type==='err'?'r-err':isMiss?'r-miss':'';
-    const badge = r.type==='ok'       ? `<span class="badge b-ok">✅ Hợp lệ</span>`
-                : r.type==='err'      ? `<span class="badge b-err">❌ Lỗi giá</span>`
-                : r.type==='nomap'    ? `<span class="badge b-miss">🔍 Chưa có barcode</span>`
-                : r.type==='nomaster' ? `<span class="badge" style="background:#f0e8ff;color:#7b5ea7;border:1px solid #c9b8f0;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700">📋 Barcode chưa có chuẩn</span>`
-                :                      `<span class="badge b-miss">🔍 Không xác định</span>`;
+
+    // Badge — combo có badge riêng
+    let badge;
+    if (r.isCombo && r.type==='ok')
+      badge = `<span class="badge" style="background:#fff5e8;color:#e67e22;border:1px solid #f5cba7;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700">📦 Combo hợp lệ</span>`;
+    else if (r.isCombo && r.type==='err')
+      badge = `<span class="badge b-err">📦❌ Combo lỗi giá</span>`;
+    else if (r.isCombo && r.type==='nomaster')
+      badge = `<span class="badge" style="background:#f0e8ff;color:#7b5ea7;border:1px solid #c9b8f0;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700">📦 Combo thiếu chuẩn</span>`;
+    else if (r.type==='ok')       badge = `<span class="badge b-ok">✅ Hợp lệ</span>`;
+    else if (r.type==='err')      badge = `<span class="badge b-err">❌ Lỗi giá</span>`;
+    else if (r.type==='nomap')    badge = `<span class="badge b-miss">🔍 Chưa có barcode</span>`;
+    else if (r.type==='nomaster') badge = `<span class="badge" style="background:#f0e8ff;color:#7b5ea7;border:1px solid #c9b8f0;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700">📋 Barcode chưa có chuẩn</span>`;
+    else badge = `<span class="badge b-miss">🔍 Không xác định</span>`;
+
     const errHtml = r.errs.length
       ? r.errs.map(e=>`<div class="${isMiss?'miss-txt':'err-txt'}">• ${e}</div>`).join('')
       : `<span style="color:#27ae60;font-size:11px">OK</span>`;
     const pctStyle = r.type==='err' ? 'color:#e63946;font-weight:700' : r.type==='ok' ? 'color:#27ae60' : '';
 
     if (curFmt === 'eligible') {
-      const ggErrStyle = (r.gg && r.ggMaster && Math.abs(r.gg-r.ggMaster)>1) ? 'color:#e63946;font-weight:700' : 'color:#555';
+      // Tên phân loại: nếu combo thì hiển thị số thành phần
+      const tenPLDisplay = r.isCombo && r.comboComponents
+        ? `<span style="color:#e67e22;font-size:10px;font-weight:700">📦 COMBO ${r.comboComponents.length} thành phần</span>`
+        : (r.tenPL || '—');
+      // Giá gốc: với combo hiển thị "tính từ thành phần"
+      const ggLabel = r.isCombo ? `<span title="Tính từ thành phần combo" style="color:#e67e22">${fmtN(r.ggMaster)}</span>` : fmtN(r.ggMaster);
+      const ggErrStyle = (!r.isCombo && r.gg && r.ggMaster && Math.abs(r.gg-r.ggMaster)>1) ? 'color:#e63946;font-weight:700' : 'color:#555';
       return `<tr class="${cls}">
         <td style="color:#999;font-size:11px">${r.rowNum}</td>
         <td style="font-size:11px;font-family:monospace;color:#888">${r.maPLH||'—'}</td>
-        <td style="font-size:11px;max-width:150px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${r.tenPL}">${r.tenPL||'—'}</td>
+        <td style="font-size:11px;max-width:150px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${r.tenPL}">${tenPLDisplay}</td>
         <td><div class="pname" title="${r.ten}">${r.ten||'—'}</div></td>
         <td style="font-size:11px;white-space:nowrap">${r.ncc}</td>
-        <td style="text-align:right;font-size:12px;${ggErrStyle}">${fmtN(r.gg)}</td>
-        <td style="text-align:right;font-size:12px;color:#555">${fmtN(r.ggMaster)}</td>
+        <td style="text-align:right;font-size:12px;${ggErrStyle}">${r.isCombo?'—':fmtN(r.gg)}</td>
+        <td style="text-align:right;font-size:12px">${ggLabel}</td>
         <td style="text-align:right;font-weight:700">${fmtN(r.gd)}</td>
         <td style="text-align:center;${pctStyle}">${r.pct!=null?r.pct.toFixed(1)+'%':'—'}</td>
         <td style="text-align:center;color:#555">${r.pctMax!=null?r.pctMax+'%':'—'}</td>
@@ -930,7 +1140,7 @@ function exportFile() {
       'Giá khuyến mãi': r.gd ?? '',
       '% Giảm TT': r.pct != null ? parseFloat(r.pct.toFixed(2)) : '',
       '% Cho phép': r.pctMax ?? '',
-      'Loại lỗi': r.type==='nomap' ? 'Chưa có barcode' : r.type==='nomaster' ? 'Barcode chưa có chuẩn' : 'Lỗi giá',
+      'Loại lỗi': r.type==='nomap' ? 'Chưa có barcode' : r.type==='nomaster' ? (r.isCombo ? 'Combo thiếu chuẩn' : 'Barcode chưa có chuẩn') : (r.isCombo ? 'Combo lỗi giá' : 'Lỗi giá'),
       'Chi tiết': r.errs.join(' | ')
     }));
     colWidths = [6, 18, 20, 40, 18, 12, 12, 12, 10, 10, 18, 60];
