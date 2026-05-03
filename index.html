@@ -569,10 +569,12 @@ function parseComboFromXlsx(bytes) {
 
     const headers = (raw[hIdx] || []).map(h => norm(h));
     // Cột F (index 5) = Mã phân loại | Cột H (index 7) = SKU Shopee | Cột I (index 8) = Mã Salework | Cột J (index 9) = Số lượng combo
-    const cMaPL = headers.findIndex(h => h.includes('mãphânloại') || h.includes('phânloại'));
-    const cSkuSP= headers.findIndex(h => h.includes('skushopee') || h === 'skushopee');
-    const cComp = headers.findIndex(h => h.includes('salework') || h.includes('mãsalework') || h.includes('liênkết'));
-    const cQty  = headers.findIndex(h => h.includes('sốlượng') || h.includes('combo'));
+    // LƯU Ý: Cột G = "Phân loại / Combo" cũng chứa chữ "combo" → phải tìm chính xác hơn
+    const cMaPL = headers.findIndex(h => h === 'mãphânloại' || (h.includes('mãphânloại')));
+    const cSkuSP= headers.findIndex(h => h === 'skushopee' || h.includes('skushopee'));
+    const cComp = headers.findIndex(h => h.includes('salework') || h.includes('liênkết'));
+    // Tìm "Số lượng" (không dùng 'combo' vì trùng với tên cột G "Phân loại / Combo")
+    const cQty  = headers.findIndex(h => h.includes('sốlượng'));
 
     if (cMaPL < 0 || cComp < 0) continue;
 
