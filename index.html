@@ -777,7 +777,7 @@ function validateSingleFile(bytes, fileName) {
     cGG    = fc('Giá gốc');
     cGia   = fc('Giá đã giảm', 'Giảm');
     cTen   = fc('Tên Sản phẩm', 'Tên');
-    cMaPLH = -1;
+    cMaPLH = fc('Mã phân loại hàng', 'Mã phân loại'); // cần để tra combo
     cTenPL = -1;
   }
 
@@ -799,7 +799,7 @@ function validateSingleFile(bytes, fileName) {
       // Ưu tiên SKU phân loại (cột F) → fallback SKU sản phẩm (cột C) khi SP chỉ có 1 phân loại
       sku   = normSku(row[cSku] || '')
            || normSku(cSkuParent >= 0 ? (row[cSkuParent] || '') : '');
-      maPLH = '';
+      maPLH = cMaPLH >= 0 ? normSku(row[cMaPLH] || '') : '';
       tenPL = '';
     }
 
@@ -904,8 +904,49 @@ function validateSingleFile(bytes, fileName) {
     } else {
       // discount nomination
       if (!sku) {
-        if (!giaF && !ten) continue;
-        type = 'warn'; errs.push('Không có SKU');
+        if (!giaF && !ten) continue; // dòng hoàn toàn rỗng
+        // Kiểm tra có phải combo không (tra maPLH vào comboMap)
+        const comboComps = (maPLH && comboMap) ? comboMap[maPLH] : null;
+        if (comboComps && comboComps.length > 0) {
+          // ── COMBO VALIDATION (discount) ───────────────────────────
+          isCombo = true;
+          comboComponents = comboComps;
+          let calcGiaGoc = 0, calcOk = true;
+          const missingSkus = [], pctVals = [], nccSet = new Set();
+          for (const comp of comboComps) {
+            const mc = masterMap[comp.sku];
+            if (!mc) { calcOk = false; missingSkus.push(comp.sku); continue; }
+            calcGiaGoc += (mc.giaGoc || 0) * comp.qty;
+            if (mc.pctMax !== null) pctVals.push(mc.pctMax);
+            if (mc.ncc) nccSet.add(mc.ncc);
+          }
+          comboGiaGoc = calcGiaGoc;
+          comboPctMax = pctVals.length > 0 ? Math.min(...pctVals) + COMBO_BONUS_PCT : null;
+          if (!calcOk) {
+            type = 'nomaster';
+            errs.push(`Combo: ${missingSkus.length} thành phần chưa có trong dữ liệu chuẩn (${missingSkus.join(', ')})`);
+          } else if (!calcGiaGoc || calcGiaGoc <= 0) {
+            type = 'nomaster';
+            errs.push('Combo: Giá gốc thành phần = 0, không thể validate');
+          } else {
+            if (!giaF || giaF <= 0) {
+              errs.push('Giá đã giảm combo trống/= 0');
+            } else {
+              if (giaF > calcGiaGoc)
+                errs.push(`Giá đã giảm combo (${fmtN(giaF)}) > Giá gốc combo (${fmtN(calcGiaGoc)})`);
+              const pct = (calcGiaGoc - giaF) / calcGiaGoc * 100;
+              if (comboPctMax !== null && pct > comboPctMax + tolerance)
+                errs.push(`% giảm ${pct.toFixed(1)}% vượt mức cho phép (${comboPctMax}% = min NCC ${Math.min(...pctVals)}% + ${COMBO_BONUS_PCT}% bonus combo)`);
+            }
+            if (errs.length) type = 'err';
+            sku = 'COMBO';
+          }
+        } else if (maPLH && comboMap && maPLH in comboMap) {
+          type = 'nomap';
+          errs.push('Combo chưa khai báo thành phần trong file DS SanPham');
+        } else {
+          type = 'warn'; errs.push('Không có SKU');
+        }
       } else if (!m) {
         type = 'nomaster'; errs.push('SKU chưa có trong dữ liệu chuẩn (Google Sheets)');
       } else {
