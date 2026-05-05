@@ -211,12 +211,12 @@ tr.r-miss { background: #faf0ff !important; }
     </div>
     <div class="upload-zone" id="uploadZone" onclick="document.getElementById('priceInput').click()">
       <div class="upload-icon">📊</div>
-      <p><strong>Kéo thả file Excel vào đây</strong></p>
+      <p><strong>Kéo thả 1 hoặc nhiều file Excel vào đây</strong></p>
       <p style="color:#999;font-size:12px;margin-top:4px">hoặc</p>
       <button class="btn-pick" onclick="event.stopPropagation();document.getElementById('priceInput').click()">Chọn file</button>
-      <p style="font-size:11px;color:#aaa;margin-top:8px">File chuẩn bị upload lên Shopee (.xlsx)</p>
+      <p style="font-size:11px;color:#aaa;margin-top:8px">Hỗ trợ nhiều file cùng lúc — kéo thả hoặc chọn nhiều file (.xlsx)</p>
     </div>
-    <input type="file" id="priceInput" accept=".xlsx,.xls" style="display:none">
+    <input type="file" id="priceInput" accept=".xlsx,.xls" multiple style="display:none">
     <div id="priceStatus"></div>
     <button class="btn-check" id="btnCheck" onclick="runCheck()" disabled style="margin-top:16px">
       🔍 Kiểm tra file
@@ -248,7 +248,7 @@ tr.r-miss { background: #faf0ff !important; }
           <div class="tab" style="color:#7b5ea7;border-color:#c9b8f0" onclick="setFilter('nomaster',this)" id="tabNoMaster">Barcode chưa có chuẩn</div>
           <div class="tab" id="tabOk" onclick="setFilter('ok',this)">Hợp lệ</div>
         </div>
-        <button class="btn-export" onclick="exportFile()">⬇ Xuất file lỗi</button>
+        <button class="btn-export" id="btnExport" onclick="exportFile()">⬇ Xuất</button>
       </div>
       <div class="table-wrap">
         <table>
@@ -275,7 +275,7 @@ let mappingMap  = null;   // Mã Phân loại → SKU (from Mass Update file)
 let mappingMeta = { count: 0 };
 let comboMap    = null;   // Mã Phân loại → [{sku, qty}] (from DS SanPham file)
 let comboMeta   = { count: 0, singles: 0 };
-let priceBytes  = null;
+let priceFiles  = [];   // [{name, bytes}]
 let allRows     = [];
 let curFilter   = 'all';
 let curPage     = 1;
@@ -616,26 +616,43 @@ function setupDrop() {
   zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
   zone.addEventListener('drop', e => {
     e.preventDefault(); zone.classList.remove('dragover');
-    const f = e.dataTransfer.files[0];
-    if (f) handleFile(f);
+    if (e.dataTransfer.files.length) handleFiles(e.dataTransfer.files);
   });
   document.getElementById('priceInput').addEventListener('change', e => {
-    if (e.target.files[0]) handleFile(e.target.files[0]);
+    if (e.target.files.length) handleFiles(e.target.files);
   });
 }
 
-function handleFile(file) {
-  const reader = new FileReader();
-  reader.onload = e => { priceBytes = new Uint8Array(e.target.result); };
-  reader.readAsArrayBuffer(file);
-  document.getElementById('uploadZone').classList.add('done');
-  document.getElementById('priceStatus').innerHTML = `<div class="file-ok">✅ ${file.name}</div>`;
-  document.getElementById('btnCheck').disabled = false;
+function handleFiles(fileList) {
+  priceFiles = [];
+  let loaded = 0;
+  const total = fileList.length;
+
+  for (const file of fileList) {
+    const reader = new FileReader();
+    reader.onload = (ev => {
+      const name = file.name;
+      return function(e) {
+        priceFiles.push({ name, bytes: new Uint8Array(e.target.result) });
+        loaded++;
+        if (loaded === total) {
+          // Tất cả file đã đọc xong
+          priceFiles.sort((a,b) => a.name.localeCompare(b.name)); // sắp xếp theo tên
+          const names = priceFiles.map(f => `✅ ${f.name}`).join('<br>');
+          document.getElementById('uploadZone').classList.add('done');
+          document.getElementById('priceStatus').innerHTML =
+            `<div class="file-ok" style="line-height:1.8">${names}<br><span style="color:#888;font-size:11px;font-weight:400">${total} file đã chọn</span></div>`;
+          document.getElementById('btnCheck').disabled = false;
+        }
+      };
+    })(file);
+    reader.readAsArrayBuffer(file);
+  }
 }
 
 // ── Validation ────────────────────────────────────────────────────────────
 function runCheck() {
-  if (!priceBytes) return;
+  if (!priceFiles.length) return;
   if (!masterMap || Object.keys(masterMap).length === 0) {
     alert('Chưa tải được dữ liệu chuẩn. Kiểm tra lại cấu hình Google Sheets.');
     return;
@@ -646,8 +663,23 @@ function runCheck() {
 }
 
 function doValidate() {
+  allRows = [];
+  const fmtSet = new Set();
+  for (const pf of priceFiles) {
+    const {rows, fmt} = validateSingleFile(pf.bytes, pf.name);
+    allRows = allRows.concat(rows);
+    fmtSet.add(fmt);
+  }
+  // curFmt: nếu chỉ 1 loại → dùng loại đó; nhiều loại → 'mixed'
+  curFmt = fmtSet.size === 1 ? [...fmtSet][0] : 'mixed';
+  renderResults();
+  document.getElementById('loadingRow').style.display = 'none';
+  document.getElementById('resultSection').style.display = 'block';
+}
+
+function validateSingleFile(bytes, fileName) {
   const tolerance = parseFloat(localStorage.getItem(LS_TOL) || DEFAULT_TOL);
-  const wb  = XLSX.read(priceBytes, { type: 'array' });
+  const wb  = XLSX.read(bytes, { type: 'array' });
   const ws  = wb.Sheets[wb.SheetNames[0]];
   const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
 
@@ -671,20 +703,20 @@ function doValidate() {
   // Discount Nomination : có cột "Giá đã giảm"  (không có "Giá khuyến mãi")
   // Eligible Product List: có cột "Giá khuyến mãi" (không có "Giá đã giảm")
   const hasGiaKM = headers.some(h => norm(h) === 'giákhuyếnmãi');
-  curFmt = hasGiaKM ? 'eligible' : 'discount';
+  const fmt = hasGiaKM ? 'eligible' : 'discount';
 
   // Eligible: có thể có 2 dòng metadata (Bắt buộc/Không bắt buộc + mô tả) HOẶC không có
   // → Kiểm tra row hIdx+1: nếu chứa "bắtbuộc"/"khôngbắtbuộc" thì dataStart = hIdx+3, không thì hIdx+1
   // Discount: data bắt đầu ngay sau header
   let dataStart = hIdx + 1;
-  if (curFmt === 'eligible') {
+  if (fmt === 'eligible') {
     const row1vals = (raw[hIdx + 1] || []).map(c => norm(c));
     const hasMetaRow = row1vals.some(v => v === 'bắtbuộc' || v === 'khôngbắtbuộc');
     dataStart = hIdx + (hasMetaRow ? 3 : 1);
   }
 
   // Cảnh báo nếu eligible mà chưa có mapping
-  if (curFmt === 'eligible' && (!mappingMap || Object.keys(mappingMap).length === 0)) {
+  if (fmt === 'eligible' && (!mappingMap || Object.keys(mappingMap).length === 0)) {
     const proceed = confirm(
       '⚠️ File này là Eligible Product List và cần file mapping để tra SKU.\n\n' +
       'Bạn chưa tải file Mass Update Sales Info.\n\n' +
@@ -720,7 +752,7 @@ function doValidate() {
 
   let cSku, cSkuParent = -1, cGia, cGG, cTen, cMaPLH, cTenPL;
 
-  if (curFmt === 'eligible') {
+  if (fmt === 'eligible') {
     // Eligible Product List: tên cột cố định, dùng exact match
     cMaPLH = exact('Mã phân loại hàng');
     cTenPL = exact('Tên phân loại hàng');
@@ -742,7 +774,7 @@ function doValidate() {
   }
 
   // ── Duyệt từng dòng dữ liệu ─────────────────────────────────────────
-  allRows = [];
+  const rows = [];
 
   for (let i = dataStart; i < raw.length; i++) {
     const row = raw[i];
@@ -750,7 +782,7 @@ function doValidate() {
 
     let sku, maPLH, tenPL;
 
-    if (curFmt === 'eligible') {
+    if (fmt === 'eligible') {
       maPLH = normSku(row[cMaPLH] || '');
       tenPL = cTenPL >= 0 ? (row[cTenPL] || '').toString().trim() : '';
       // Tra SKU qua mapping
@@ -774,7 +806,7 @@ function doValidate() {
     // Thông tin bổ sung cho combo (sẽ dùng khi render bảng)
     let isCombo = false, comboGiaGoc = null, comboPctMax = null, comboComponents = null;
 
-    if (curFmt === 'eligible') {
+    if (fmt === 'eligible') {
       if (!maPLH) {
         if (!giaF && !ten) continue; // dòng hoàn toàn rỗng
         type = 'warn'; errs.push('Không có Mã phân loại hàng');
@@ -895,8 +927,10 @@ function doValidate() {
       nccDisplay = nccSet.size > 0 ? [...nccSet].join(', ') : '—';
     }
 
-    allRows.push({
+    rows.push({
       rowNum: i + 1,
+      fileName,
+      fmt,
       sku,
       maPLH,
       tenPL,
@@ -914,9 +948,7 @@ function doValidate() {
     });
   }
 
-  renderResults();
-  document.getElementById('loadingRow').style.display = 'none';
-  document.getElementById('resultSection').style.display = 'block';
+  return { rows, fmt };
 }
 
 // ── Render ────────────────────────────────────────────────────────────────
@@ -945,6 +977,8 @@ function renderResults() {
   // Format label
   const fmtLabel = curFmt === 'eligible'
     ? '<span style="background:#fff8e8;color:#e67e22;border:1.5px solid #f5cba7;padding:2px 10px;border-radius:12px;font-size:11px;font-weight:700">📋 Eligible Product List</span>'
+    : curFmt === 'mixed'
+    ? '<span style="background:#f0f4ff;color:#4a6cf7;border:1.5px solid #c5d0ef;padding:2px 10px;border-radius:12px;font-size:11px;font-weight:700">🔀 Nhiều loại file (' + priceFiles.length + ' file)</span>'
     : '<span style="background:#eaf5ea;color:#27ae60;border:1.5px solid #a9dfbf;padding:2px 10px;border-radius:12px;font-size:11px;font-weight:700">🏷️ Discount Nomination</span>';
   document.getElementById('fmtTag').innerHTML = fmtLabel;
 
@@ -969,14 +1003,23 @@ function renderResults() {
       <div class="stat c-pct"><div class="num">${total>0?((nErr+nMiss)/total*100).toFixed(1):0}%</div><div class="lbl">Tỷ lệ lỗi</div></div>`;
   }
 
-  // Cập nhật tab theo format + hiển thị số đếm
+  // Cập nhật tab theo format + hiển thị số đếm + gán đúng filter
   const nWarn = allRows.filter(r=>r.type==='warn').length;
+  const tabMissEl = document.getElementById('tabMiss');
   const tabNoMaster = document.getElementById('tabNoMaster');
-  if (curFmt === 'eligible') {
-    document.getElementById('tabMiss').textContent = `Chưa có barcode (${nNoMap})`;
-    if (tabNoMaster) { tabNoMaster.style.display = ''; tabNoMaster.textContent = `Barcode chưa có chuẩn (${nNoMaster})`; }
+  if (curFmt === 'eligible' || curFmt === 'mixed') {
+    // Eligible hoặc hỗn hợp: hiện cả 2 tab
+    tabMissEl.textContent = `Chưa có barcode (${nNoMap})`;
+    tabMissEl.onclick = function(){ setFilter('nomap', this); };
+    if (tabNoMaster) {
+      tabNoMaster.style.display = '';
+      tabNoMaster.textContent = `Barcode/SKU chưa có chuẩn (${nNoMaster})`;
+      tabNoMaster.onclick = function(){ setFilter('nomaster', this); };
+    }
   } else {
-    document.getElementById('tabMiss').textContent = `SKU không có chuẩn (${nNoMaster})`;
+    // Discount thuần: chỉ 1 tab miss → lọc nomaster
+    tabMissEl.textContent = `SKU không có chuẩn (${nNoMaster})`;
+    tabMissEl.onclick = function(){ setFilter('nomaster', this); };
     if (tabNoMaster) tabNoMaster.style.display = 'none';
   }
   // Tab chung
@@ -1015,8 +1058,10 @@ function renderTable() {
   const thead = document.getElementById('tableHead');
 
   if (curFmt === 'eligible') {
+    const fileCol = priceFiles.length > 1 ? '<th>File</th>' : '';
     thead.innerHTML = `<tr>
       <th>Dòng</th>
+      ${fileCol}
       <th>Mã phân loại hàng</th>
       <th>Tên phân loại</th>
       <th>Tên sản phẩm</th>
@@ -1032,6 +1077,7 @@ function renderTable() {
   } else {
     thead.innerHTML = `<tr>
       <th>Dòng</th>
+      ${fileCol}
       <th>SKU</th>
       <th>Tên sản phẩm</th>
       <th>NCC</th>
@@ -1083,8 +1129,10 @@ function renderTable() {
       // Giá gốc: với combo hiển thị "tính từ thành phần"
       const ggLabel = r.isCombo ? `<span title="Tính từ thành phần combo" style="color:#e67e22">${fmtN(r.ggMaster)}</span>` : fmtN(r.ggMaster);
       const ggErrStyle = (!r.isCombo && r.gg && r.ggMaster && Math.abs(r.gg-r.ggMaster)>1) ? 'color:#e63946;font-weight:700' : 'color:#555';
+      const fileCell = priceFiles.length > 1 ? `<td style="font-size:10px;color:#777;max-width:100px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${r.fileName}">${r.fileName}</td>` : '';
       return `<tr class="${cls}">
         <td style="color:#999;font-size:11px">${r.rowNum}</td>
+        ${fileCell}
         <td style="font-size:11px;font-family:monospace;color:#888">${r.maPLH||'—'}</td>
         <td style="font-size:11px;max-width:150px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${r.tenPL}">${tenPLDisplay}</td>
         <td><div class="pname" title="${r.ten}">${r.ten||'—'}</div></td>
@@ -1099,8 +1147,10 @@ function renderTable() {
       </tr>`;
     } else {
       const ggErrStyle = (r.gg && r.ggMaster && Math.abs(r.gg-r.ggMaster)>1) ? 'color:#e63946;font-weight:700' : 'color:#555';
+      const fileCell2 = priceFiles.length > 1 ? `<td style="font-size:10px;color:#777;max-width:100px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${r.fileName}">${r.fileName}</td>` : '';
       return `<tr class="${cls}">
         <td style="color:#999;font-size:11px">${r.rowNum}</td>
+        ${fileCell2}
         <td style="font-size:11px;font-family:monospace">${r.sku||'—'}</td>
         <td><div class="pname" title="${r.ten}">${r.ten||'—'}</div></td>
         <td style="font-size:11px;white-space:nowrap">${r.ncc}</td>
@@ -1132,54 +1182,88 @@ function renderPagination(max) {
   p.innerHTML=h;
 }
 function goPage(n){curPage=n;renderTable();}
-function setFilter(f,el){curFilter=f;curPage=1;document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));el.classList.add('active');renderTable();}
+function setFilter(f,el){
+  curFilter=f; curPage=1;
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  el.classList.add('active');
+  renderTable();
+  // Cập nhật label nút xuất theo filter đang chọn
+  const labels = { all:'Tất cả', err:'Lỗi giá', nomap:'Chưa có barcode', nomaster:'SKU không có chuẩn', ok:'Hợp lệ' };
+  const btn = document.getElementById('btnExport');
+  if (btn) btn.textContent = '⬇ Xuất: ' + (labels[f] || 'Tất cả');
+}
 
 // ── Export ────────────────────────────────────────────────────────────────
+function getStatusLabel(r) {
+  if (r.isCombo && r.type==='ok')       return 'Combo hợp lệ';
+  if (r.isCombo && r.type==='err')      return 'Combo lỗi giá';
+  if (r.isCombo && r.type==='nomaster') return 'Combo thiếu chuẩn';
+  if (r.type==='ok')                    return 'Hợp lệ';
+  if (r.type==='err')                   return 'Lỗi giá';
+  if (r.type==='nomap')                 return 'Chưa có barcode';
+  if (r.type==='nomaster')              return 'SKU chưa có chuẩn';
+  if (r.type==='warn')                  return 'Thiếu SKU';
+  return 'Không xác định';
+}
+
 function exportFile() {
-  const errs = allRows.filter(r => r.type==='err' || r.type==='nomap' || r.type==='nomaster');
-  if (!errs.length) { alert('Không có lỗi để xuất!'); return; }
+  const rows = getFiltered(); // xuất theo filter đang chọn
+  if (!rows.length) { alert('Không có dòng nào để xuất!'); return; }
+
+  // Tên sheet và file theo filter
+  const filterNames = { all:'tat_ca', err:'loi_gia', nomap:'chua_co_barcode', nomaster:'sku_chua_co_chuan', ok:'hop_le' };
+  const sheetNames  = { all:'Tất cả', err:'Lỗi giá', nomap:'Chưa có barcode', nomaster:'SKU chưa chuẩn', ok:'Hợp lệ' };
+  const suffix = filterNames[curFilter] || 'tat_ca';
+  const sheetName = sheetNames[curFilter] || 'Kết quả';
 
   let data, colWidths;
 
   if (curFmt === 'eligible') {
-    data = errs.map(r => ({
-      'Dòng': r.rowNum,
-      'Mã phân loại hàng': r.maPLH,
-      'Tên phân loại': r.tenPL,
-      'Tên sản phẩm': r.ten,
-      'NCC': r.ncc,
-      'Giá Gốc (file)': r.gg ?? '',
-      'Giá Gốc (chuẩn)': r.ggMaster ?? '',
-      'Giá khuyến mãi': r.gd ?? '',
-      '% Giảm TT': r.pct != null ? parseFloat(r.pct.toFixed(2)) : '',
-      '% Cho phép': r.pctMax ?? '',
-      'Loại lỗi': r.type==='nomap' ? 'Chưa có barcode' : r.type==='nomaster' ? (r.isCombo ? 'Combo thiếu chuẩn' : 'Barcode chưa có chuẩn') : (r.isCombo ? 'Combo lỗi giá' : 'Lỗi giá'),
-      'Chi tiết': r.errs.join(' | ')
-    }));
-    colWidths = [6, 18, 20, 40, 18, 12, 12, 12, 10, 10, 18, 60];
+    const hasMulti = priceFiles.length > 1;
+    data = rows.map(r => {
+      const obj = {};
+      if (hasMulti) obj['File'] = r.fileName;
+      obj['Dòng'] = r.rowNum;
+      obj['Mã phân loại hàng'] = r.maPLH;
+      obj['Tên phân loại'] = r.tenPL;
+      obj['Tên sản phẩm'] = r.ten;
+      obj['NCC'] = r.ncc;
+      obj['Giá Gốc (file)'] = r.gg ?? '';
+      obj['Giá Gốc (chuẩn)'] = r.ggMaster ?? '';
+      obj['Giá khuyến mãi'] = r.gd ?? '';
+      obj['% Giảm TT'] = r.pct != null ? parseFloat(r.pct.toFixed(2)) : '';
+      obj['% Cho phép'] = r.pctMax ?? '';
+      obj['Trạng thái'] = getStatusLabel(r);
+      obj['Chi tiết'] = r.errs.join(' | ');
+      return obj;
+    });
+    colWidths = [...(hasMulti?[20]:[]), 6, 18, 20, 40, 18, 12, 12, 12, 10, 10, 20, 60];
   } else {
-    data = errs.map(r => ({
-      'Dòng': r.rowNum,
-      'Mã SKU': r.sku,
-      'Tên sản phẩm': r.ten,
-      'NCC': r.ncc,
-      'Giá gốc (file)': r.gg ?? '',
-      'Giá gốc (chuẩn)': r.ggMaster ?? '',
-      'Giá đã giảm': r.gd ?? '',
-      '% Giảm TT': r.pct != null ? parseFloat(r.pct.toFixed(2)) : '',
-      '% Cho phép': r.pctMax ?? '',
-      'Loại lỗi': r.type==='nomaster' ? 'SKU chưa có chuẩn' : 'Lỗi giá',
-      'Chi tiết': r.errs.join(' | ')
-    }));
-    colWidths = [6, 14, 40, 18, 12, 12, 12, 10, 10, 18, 60];
+    data = rows.map(r => {
+      const obj = {};
+      if (priceFiles.length > 1) obj['File'] = r.fileName;
+      obj['Dòng'] = r.rowNum;
+      obj['Mã SKU'] = r.sku;
+      obj['Tên sản phẩm'] = r.ten;
+      obj['NCC'] = r.ncc;
+      obj['Giá gốc (file)'] = r.gg ?? '';
+      obj['Giá gốc (chuẩn)'] = r.ggMaster ?? '';
+      obj['Giá đã giảm'] = r.gd ?? '';
+      obj['% Giảm TT'] = r.pct != null ? parseFloat(r.pct.toFixed(2)) : '';
+      obj['% Cho phép'] = r.pctMax ?? '';
+      obj['Trạng thái'] = getStatusLabel(r);
+      obj['Chi tiết'] = r.errs.join(' | ');
+      return obj;
+    });
+    colWidths = [...(priceFiles.length > 1 ? [20] : []), 6, 14, 40, 18, 12, 12, 12, 10, 10, 20, 60];
   }
 
   const wsOut = XLSX.utils.json_to_sheet(data);
   wsOut['!cols'] = colWidths.map(w => ({ wch: w }));
   const wbOut = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wbOut, wsOut, 'Lỗi');
+  XLSX.utils.book_append_sheet(wbOut, wsOut, sheetName);
   const d = new Date();
-  XLSX.writeFile(wbOut, `loi_gia_${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}.xlsx`);
+  XLSX.writeFile(wbOut, `2h_${suffix}_${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}.xlsx`);
 }
 
 function fmtN(n){return(n!=null&&!isNaN(n))?Math.round(n).toLocaleString('vi-VN')+'đ':'—';}
