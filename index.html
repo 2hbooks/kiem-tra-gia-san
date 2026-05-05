@@ -663,18 +663,25 @@ function runCheck() {
 }
 
 function doValidate() {
-  allRows = [];
-  const fmtSet = new Set();
-  for (const pf of priceFiles) {
-    const {rows, fmt} = validateSingleFile(pf.bytes, pf.name);
-    allRows = allRows.concat(rows);
-    fmtSet.add(fmt);
+  try {
+    allRows = [];
+    const fmtSet = new Set();
+    for (const pf of priceFiles) {
+      const result = validateSingleFile(pf.bytes, pf.name);
+      if (!result) continue; // bị cancel
+      allRows = allRows.concat(result.rows);
+      fmtSet.add(result.fmt);
+    }
+    // curFmt: nếu chỉ 1 loại → dùng loại đó; nhiều loại → 'mixed'
+    curFmt = fmtSet.size === 1 ? [...fmtSet][0] : (fmtSet.size > 1 ? 'mixed' : 'discount');
+    renderResults();
+    document.getElementById('loadingRow').style.display = 'none';
+    document.getElementById('resultSection').style.display = 'block';
+  } catch(e) {
+    document.getElementById('loadingRow').style.display = 'none';
+    console.error('doValidate error:', e);
+    alert('❌ Lỗi xử lý file: ' + e.message + '\n\nVui lòng kiểm tra Console (F12) để biết chi tiết.');
   }
-  // curFmt: nếu chỉ 1 loại → dùng loại đó; nhiều loại → 'mixed'
-  curFmt = fmtSet.size === 1 ? [...fmtSet][0] : 'mixed';
-  renderResults();
-  document.getElementById('loadingRow').style.display = 'none';
-  document.getElementById('resultSection').style.display = 'block';
 }
 
 function validateSingleFile(bytes, fileName) {
@@ -725,7 +732,7 @@ function validateSingleFile(bytes, fileName) {
     );
     if (!proceed) {
       document.getElementById('loadingRow').style.display = 'none';
-      return;
+      return { rows: [], fmt: 'eligible' };
     }
   }
 
