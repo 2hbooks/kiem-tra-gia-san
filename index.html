@@ -1056,9 +1056,9 @@ function getFiltered() {
 
 function renderTable() {
   const thead = document.getElementById('tableHead');
+  const fileCol = priceFiles.length > 1 ? '<th>File</th>' : '';
 
   if (curFmt === 'eligible') {
-    const fileCol = priceFiles.length > 1 ? '<th>File</th>' : '';
     thead.innerHTML = `<tr>
       <th>Dòng</th>
       ${fileCol}
