@@ -246,6 +246,7 @@ tr.r-miss { background: #faf0ff !important; }
           <div class="tab t-err"  onclick="setFilter('err',this)">Có lỗi giá</div>
           <div class="tab t-miss" onclick="setFilter('nomap',this)" id="tabMiss">Chưa có barcode</div>
           <div class="tab" style="color:#7b5ea7;border-color:#c9b8f0" onclick="setFilter('nomaster',this)" id="tabNoMaster">Barcode chưa có chuẩn</div>
+          <div class="tab" style="color:#b7860b;border-color:#f5d97a" onclick="setFilter('warn',this)" id="tabWarn" style="display:none">Không có SKU</div>
           <div class="tab" id="tabOk" onclick="setFilter('ok',this)">Hợp lệ</div>
         </div>
         <button class="btn-export" id="btnExport" onclick="exportFile()">⬇ Xuất</button>
@@ -1002,20 +1003,27 @@ function renderResults() {
       <div class="stat c-ok"><div class="num">${nOk}</div><div class="lbl">Hợp lệ</div></div>
       <div class="stat c-pct"><div class="num">${total>0?((nErr+nMiss)/total*100).toFixed(1):0}%</div><div class="lbl">Tỷ lệ lỗi</div></div>`;
   } else {
+    const nWarnD = allRows.filter(r=>r.type==='warn').length;
+    const warnStat = nWarnD > 0
+      ? `<div class="stat" style="background:#fff8e8;border-color:#f5d97a"><div class="num" style="color:#b7860b">${nWarnD}</div><div class="lbl">Không có SKU</div></div>`
+      : '';
     document.getElementById('summaryGrid').innerHTML = `
       <div class="stat c-total"><div class="num">${total.toLocaleString()}</div><div class="lbl">Tổng dòng</div></div>
       <div class="stat c-err"><div class="num">${nErr}</div><div class="lbl">Lỗi giá</div></div>
       <div class="stat c-miss"><div class="num">${nNoMaster}</div><div class="lbl">SKU không có chuẩn</div></div>
+      ${warnStat}
       <div class="stat c-ok"><div class="num">${nOk}</div><div class="lbl">Hợp lệ</div></div>
-      <div class="stat c-pct"><div class="num">${total>0?((nErr+nMiss)/total*100).toFixed(1):0}%</div><div class="lbl">Tỷ lệ lỗi</div></div>`;
+      <div class="stat c-pct"><div class="num">${total>0?((nErr+nMiss+nWarnD)/total*100).toFixed(1):0}%</div><div class="lbl">Tỷ lệ lỗi</div></div>`;
   }
 
   // Cập nhật tab theo format + hiển thị số đếm + gán đúng filter
   const nWarn = allRows.filter(r=>r.type==='warn').length;
-  const tabMissEl = document.getElementById('tabMiss');
+  const tabMissEl   = document.getElementById('tabMiss');
   const tabNoMaster = document.getElementById('tabNoMaster');
+  const tabWarnEl   = document.getElementById('tabWarn');
+
   if (curFmt === 'eligible' || curFmt === 'mixed') {
-    // Eligible hoặc hỗn hợp: hiện cả 2 tab
+    // Eligible hoặc hỗn hợp: hiện cả 2 tab nomap + nomaster
     tabMissEl.textContent = `Chưa có barcode (${nNoMap})`;
     tabMissEl.onclick = function(){ setFilter('nomap', this); };
     if (tabNoMaster) {
@@ -1023,11 +1031,20 @@ function renderResults() {
       tabNoMaster.textContent = `Barcode/SKU chưa có chuẩn (${nNoMaster})`;
       tabNoMaster.onclick = function(){ setFilter('nomaster', this); };
     }
+    if (tabWarnEl) tabWarnEl.style.display = 'none'; // eligible không có warn tab
   } else {
-    // Discount thuần: chỉ 1 tab miss → lọc nomaster
+    // Discount thuần: tab nomaster + tab warn (nếu có)
     tabMissEl.textContent = `SKU không có chuẩn (${nNoMaster})`;
     tabMissEl.onclick = function(){ setFilter('nomaster', this); };
     if (tabNoMaster) tabNoMaster.style.display = 'none';
+    if (tabWarnEl) {
+      if (nWarn > 0) {
+        tabWarnEl.style.display = '';
+        tabWarnEl.textContent = `Không có SKU (${nWarn})`;
+      } else {
+        tabWarnEl.style.display = 'none';
+      }
+    }
   }
   // Tab chung
   document.querySelector('.tab.t-err').textContent = `Có lỗi giá (${nErr})`;
@@ -1057,6 +1074,7 @@ function getFiltered() {
   if (curFilter==='miss')    return allRows.filter(r=>r.type==='nomap'||r.type==='nomaster');
   if (curFilter==='nomap')   return allRows.filter(r=>r.type==='nomap');
   if (curFilter==='nomaster')return allRows.filter(r=>r.type==='nomaster');
+  if (curFilter==='warn')    return allRows.filter(r=>r.type==='warn');
   if (curFilter==='ok')      return allRows.filter(r=>r.type==='ok');  // chỉ lấy hợp lệ thực sự, không lấy warn
   return allRows;
 }
@@ -1195,7 +1213,7 @@ function setFilter(f,el){
   el.classList.add('active');
   renderTable();
   // Cập nhật label nút xuất theo filter đang chọn
-  const labels = { all:'Tất cả', err:'Lỗi giá', nomap:'Chưa có barcode', nomaster:'SKU không có chuẩn', ok:'Hợp lệ' };
+  const labels = { all:'Tất cả', err:'Lỗi giá', nomap:'Chưa có barcode', nomaster:'SKU không có chuẩn', warn:'Không có SKU', ok:'Hợp lệ' };
   const btn = document.getElementById('btnExport');
   if (btn) btn.textContent = '⬇ Xuất: ' + (labels[f] || 'Tất cả');
 }
@@ -1218,8 +1236,8 @@ function exportFile() {
   if (!rows.length) { alert('Không có dòng nào để xuất!'); return; }
 
   // Tên sheet và file theo filter
-  const filterNames = { all:'tat_ca', err:'loi_gia', nomap:'chua_co_barcode', nomaster:'sku_chua_co_chuan', ok:'hop_le' };
-  const sheetNames  = { all:'Tất cả', err:'Lỗi giá', nomap:'Chưa có barcode', nomaster:'SKU chưa chuẩn', ok:'Hợp lệ' };
+  const filterNames = { all:'tat_ca', err:'loi_gia', nomap:'chua_co_barcode', nomaster:'sku_chua_co_chuan', warn:'khong_co_sku', ok:'hop_le' };
+  const sheetNames  = { all:'Tất cả', err:'Lỗi giá', nomap:'Chưa có barcode', nomaster:'SKU chưa chuẩn', warn:'Không có SKU', ok:'Hợp lệ' };
   const suffix = filterNames[curFilter] || 'tat_ca';
   const sheetName = sheetNames[curFilter] || 'Kết quả';
 
