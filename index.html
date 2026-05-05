@@ -246,7 +246,7 @@ tr.r-miss { background: #faf0ff !important; }
           <div class="tab t-err"  onclick="setFilter('err',this)">Có lỗi giá</div>
           <div class="tab t-miss" onclick="setFilter('nomap',this)" id="tabMiss">Chưa có barcode</div>
           <div class="tab" style="color:#7b5ea7;border-color:#c9b8f0" onclick="setFilter('nomaster',this)" id="tabNoMaster">Barcode chưa có chuẩn</div>
-          <div class="tab"        onclick="setFilter('ok',this)">Hợp lệ</div>
+          <div class="tab" id="tabOk" onclick="setFilter('ok',this)">Hợp lệ</div>
         </div>
         <button class="btn-export" onclick="exportFile()">⬇ Xuất file lỗi</button>
       </div>
@@ -718,7 +718,7 @@ function doValidate() {
     return -1;
   };
 
-  let cSku, cGia, cGG, cTen, cMaPLH, cTenPL;
+  let cSku, cSkuParent = -1, cGia, cGG, cTen, cMaPLH, cTenPL;
 
   if (curFmt === 'eligible') {
     // Eligible Product List: tên cột cố định, dùng exact match
@@ -730,7 +730,10 @@ function doValidate() {
     cSku   = -1; // không có SKU trực tiếp — sẽ tra qua mapping
   } else {
     // Discount Nomination: có thể có hậu tố "(Tùy chọn)", dùng fc với strip
-    cSku   = fc('Số SKU Phân loại hàng', 'SKU Phân loại hàng', 'SKU Phân loại', 'SKU');
+    // cSku   = "Số SKU Phân loại hàng" (variation-level SKU, cột F)
+    // cSkuParent = "Số SKU Sản phẩm" (product-level SKU, cột C) — fallback khi SP chỉ có 1 phân loại
+    cSku       = fc('Số SKU Phân loại hàng', 'SKU Phân loại hàng', 'SKU Phân loại');
+    cSkuParent = fc('Số SKU Sản phẩm', 'SKU Sản phẩm');
     cGG    = fc('Giá gốc');
     cGia   = fc('Giá đã giảm', 'Giảm');
     cTen   = fc('Tên Sản phẩm', 'Tên');
@@ -753,7 +756,9 @@ function doValidate() {
       // Tra SKU qua mapping
       sku = (maPLH && mappingMap) ? (mappingMap[maPLH] || '') : '';
     } else {
-      sku   = normSku(row[cSku] || '');
+      // Ưu tiên SKU phân loại (cột F) → fallback SKU sản phẩm (cột C) khi SP chỉ có 1 phân loại
+      sku   = normSku(row[cSku] || '')
+           || normSku(cSkuParent >= 0 ? (row[cSkuParent] || '') : '');
       maPLH = '';
       tenPL = '';
     }
@@ -964,15 +969,20 @@ function renderResults() {
       <div class="stat c-pct"><div class="num">${total>0?((nErr+nMiss)/total*100).toFixed(1):0}%</div><div class="lbl">Tỷ lệ lỗi</div></div>`;
   }
 
-  // Cập nhật tab theo format
+  // Cập nhật tab theo format + hiển thị số đếm
+  const nWarn = allRows.filter(r=>r.type==='warn').length;
   const tabNoMaster = document.getElementById('tabNoMaster');
   if (curFmt === 'eligible') {
-    document.getElementById('tabMiss').textContent = 'Chưa có barcode';
-    if (tabNoMaster) tabNoMaster.style.display = '';
+    document.getElementById('tabMiss').textContent = `Chưa có barcode (${nNoMap})`;
+    if (tabNoMaster) { tabNoMaster.style.display = ''; tabNoMaster.textContent = `Barcode chưa có chuẩn (${nNoMaster})`; }
   } else {
-    document.getElementById('tabMiss').textContent = 'SKU không có chuẩn';
+    document.getElementById('tabMiss').textContent = `SKU không có chuẩn (${nNoMaster})`;
     if (tabNoMaster) tabNoMaster.style.display = 'none';
   }
+  // Tab chung
+  document.querySelector('.tab.t-err').textContent = `Có lỗi giá (${nErr})`;
+  const tabOk = document.getElementById('tabOk');
+  if (tabOk) tabOk.textContent = `Hợp lệ (${nOk})`;
 
   // NCC breakdown
   const byNcc = {};
@@ -997,7 +1007,7 @@ function getFiltered() {
   if (curFilter==='miss')    return allRows.filter(r=>r.type==='nomap'||r.type==='nomaster');
   if (curFilter==='nomap')   return allRows.filter(r=>r.type==='nomap');
   if (curFilter==='nomaster')return allRows.filter(r=>r.type==='nomaster');
-  if (curFilter==='ok')      return allRows.filter(r=>r.type==='ok'||r.type==='warn');
+  if (curFilter==='ok')      return allRows.filter(r=>r.type==='ok');  // chỉ lấy hợp lệ thực sự, không lấy warn
   return allRows;
 }
 
@@ -1057,6 +1067,7 @@ function renderTable() {
     else if (r.type==='err')      badge = `<span class="badge b-err">❌ Lỗi giá</span>`;
     else if (r.type==='nomap')    badge = `<span class="badge b-miss">🔍 Chưa có barcode</span>`;
     else if (r.type==='nomaster') badge = `<span class="badge" style="background:#f0e8ff;color:#7b5ea7;border:1px solid #c9b8f0;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700">📋 Barcode chưa có chuẩn</span>`;
+    else if (r.type==='warn')     badge = `<span class="badge" style="background:#fff8e8;color:#b7860b;border:1px solid #f5d97a;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700">⚠️ Thiếu SKU</span>`;
     else badge = `<span class="badge b-miss">🔍 Không xác định</span>`;
 
     const errHtml = r.errs.length
