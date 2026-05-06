@@ -389,17 +389,38 @@ function parseCsv(text) {
   };
 
   const map = {};
+  const duplicates = {}; // sku → [{dòng, giá}]
   for (let i = 1; i < lines.length; i++) {
     const cols = splitCsvLine(lines[i]);
     const sku  = normSku(cols[iSku] || '');
     if (!sku) continue;
     const pctRaw = (cols[iPct] || '').replace('%','').trim();
-    map[sku] = {
+    const entry = {
       ncc:    (cols[iNcc] || '').trim(),
       giaGoc: parseVNNum(cols[iGia]),
       pctMax: pctRaw !== '' ? (parseFloat(pctRaw) ?? null) : null,
       tenSP:  iTen >= 0 ? (cols[iTen] || '').trim() : ''
     };
+    if (map[sku]) {
+      // Phát hiện duplicate SKU
+      if (!duplicates[sku]) duplicates[sku] = [{ dong: i, gia: map[sku].giaGoc }];
+      duplicates[sku].push({ dong: i + 1, gia: entry.giaGoc });
+    }
+    map[sku] = entry; // dòng sau ghi đè dòng trước
+  }
+  // Hiển thị cảnh báo duplicate nếu có
+  const dupCount = Object.keys(duplicates).length;
+  if (dupCount > 0) {
+    const dupList = Object.entries(duplicates).slice(0, 5)
+      .map(([sku, rows]) => `• ${sku}: ${rows.map(r => `dòng ${r.dong} (${r.gia ? Math.round(r.gia).toLocaleString('vi-VN') + 'đ' : '?'} )`).join(' → ')}`)
+      .join('\n');
+    const more = dupCount > 5 ? `\n... và ${dupCount - 5} SKU trùng khác` : '';
+    console.warn('Duplicate SKUs:', duplicates);
+    // Hiện cảnh báo trên UI
+    setTimeout(() => {
+      const sub = document.getElementById('statusSub');
+      if (sub) sub.innerHTML = `<span style="color:#e67e22;font-weight:700">⚠️ Phát hiện ${dupCount} SKU trùng trong Google Sheets — dòng sau sẽ ghi đè dòng trước. Kiểm tra console (F12) để xem chi tiết.</span>`;
+    }, 100);
   }
   return map;
 }
@@ -1129,6 +1150,7 @@ function renderTable() {
       <th>Dòng</th>
       ${fileCol}
       <th>Mã phân loại hàng</th>
+      <th>SKU</th>
       <th>Tên phân loại</th>
       <th>Tên sản phẩm</th>
       <th>NCC</th>
@@ -1196,10 +1218,12 @@ function renderTable() {
       const ggLabel = r.isCombo ? `<span title="Tính từ thành phần combo" style="color:#e67e22">${fmtN(r.ggMaster)}</span>` : fmtN(r.ggMaster);
       const ggErrStyle = (!r.isCombo && r.gg && r.ggMaster && Math.abs(r.gg-r.ggMaster)>1) ? 'color:#e63946;font-weight:700' : 'color:#555';
       const fileCell = priceFiles.length > 1 ? `<td style="font-size:10px;color:#777;max-width:100px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${r.fileName}">${r.fileName}</td>` : '';
+      const skuDisplay = r.isCombo ? `<span style="color:#e67e22;font-size:10px;font-weight:700">📦 COMBO</span>` : (r.sku ? `<span style="font-family:monospace;font-size:11px">${r.sku}</span>` : '<span style="color:#aaa">—</span>');
       return `<tr class="${cls}">
         <td style="color:#999;font-size:11px">${r.rowNum}</td>
         ${fileCell}
         <td style="font-size:11px;font-family:monospace;color:#888">${r.maPLH||'—'}</td>
+        <td style="font-size:12px">${skuDisplay}</td>
         <td style="font-size:11px;max-width:150px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${r.tenPL}">${tenPLDisplay}</td>
         <td><div class="pname" title="${r.ten}">${r.ten||'—'}</div></td>
         <td style="font-size:11px;white-space:nowrap">${r.ncc}</td>
@@ -1291,6 +1315,7 @@ function exportFile() {
       if (hasMulti) obj['File'] = r.fileName;
       obj['Dòng'] = r.rowNum;
       obj['Mã phân loại hàng'] = r.maPLH;
+      obj['Mã SKU'] = r.isCombo ? 'COMBO' : (r.sku || '');
       obj['Tên phân loại'] = r.tenPL;
       obj['Tên sản phẩm'] = r.ten;
       obj['NCC'] = r.ncc;
@@ -1303,7 +1328,7 @@ function exportFile() {
       obj['Chi tiết'] = r.errs.join(' | ');
       return obj;
     });
-    colWidths = [...(hasMulti?[20]:[]), 6, 18, 20, 40, 18, 12, 12, 12, 10, 10, 20, 60];
+    colWidths = [...(hasMulti?[20]:[]), 6, 18, 14, 20, 40, 18, 12, 12, 12, 10, 10, 20, 60];
   } else {
     data = rows.map(r => {
       const obj = {};
