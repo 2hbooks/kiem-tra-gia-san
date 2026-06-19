@@ -174,30 +174,16 @@ tr.r-miss { background: #faf0ff !important; }
     </div>
   </div>
 
-  <!-- 2. Mapping data bar (Mass Update file → Mã Phân loại → SKU) -->
-  <div class="master-bar mapping-bar">
-    <div class="master-status">
-      <div class="status-dot dot-idle" id="mappingDot"></div>
-      <div class="master-info">
-        <strong id="mappingText">Chưa tải file mapping</strong>
-        <small id="mappingSub">Upload file <em>Mass Update Sales Info</em> (.xlsx) — cần thiết để kiểm tra file Eligible Product List</small>
-      </div>
-    </div>
-    <span class="mapping-label">NGUỒN 2</span>
-    <button class="btn-refresh" onclick="document.getElementById('mappingInput').click()" style="background:#f6fff0;color:#27ae60;border-color:#b2dfb2">📂 Tải file mapping</button>
-    <input type="file" id="mappingInput" accept=".xlsx,.xls" style="display:none">
-  </div>
-
-  <!-- 3. Combo source bar (DS SanPham → Mã Phân loại → thành phần combo) -->
+  <!-- 2. Combo source bar (DS SanPham → Mã Phân loại → SKU SP lẻ / thành phần combo) -->
   <div class="master-bar mapping-bar" style="border-color:#e8e0f8;background:#fdfaff;">
     <div class="master-status">
       <div class="status-dot dot-idle" id="comboDot"></div>
       <div class="master-info">
         <strong id="comboText">Chưa tải file danh sách sản phẩm</strong>
-        <small id="comboSub">Upload file <em>DS SanPham MAP Salework</em> (.xlsx) — dùng để validate giá combo</small>
+        <small id="comboSub">Upload file <em>DS SanPham MAP Salework</em> (.xlsx) — dùng để tra SKU SP lẻ và validate giá combo</small>
       </div>
     </div>
-    <span class="mapping-label" style="background:#f5f0ff;color:#7b5ea7;border-color:#c9b8f0">NGUỒN 3</span>
+    <span class="mapping-label" style="background:#f5f0ff;color:#7b5ea7;border-color:#c9b8f0">NGUỒN 2</span>
     <button class="btn-refresh" onclick="document.getElementById('comboInput').click()" style="background:#f8f5ff;color:#7b5ea7;border-color:#c9b8f0">📂 Tải file combo</button>
     <button class="btn-refresh" onclick="clearSavedCombo()" title="Xoá dữ liệu combo đã lưu, upload lại file mới">🗑 Xoá đã lưu</button>
     <input type="file" id="comboInput" accept=".xlsx,.xls" style="display:none">
@@ -209,7 +195,7 @@ tr.r-miss { background: #faf0ff !important; }
     <div style="font-size:12px;color:#888;margin-bottom:14px;line-height:1.7;background:#f8f9fd;border-radius:7px;padding:10px 14px;">
       Hỗ trợ 2 loại file Shopee:<br>
       &bull; <strong>Discount Nomination</strong> — có cột SKU + Giá gốc + Giá đã giảm<br>
-      &bull; <strong>Eligible Product List</strong> — có cột Mã phân loại hàng + Giá Gốc + Giá khuyến mãi (cần tải file mapping trước)
+      &bull; <strong>Eligible Product List</strong> — có cột Mã phân loại hàng + Giá Gốc + Giá khuyến mãi (cần Nguồn 2 đã có dữ liệu SKU)
     </div>
     <div class="upload-zone" id="uploadZone" onclick="document.getElementById('priceInput').click()">
       <div class="upload-icon">📊</div>
@@ -272,14 +258,14 @@ tr.r-miss { background: #faf0ff !important; }
 const LS_URL = '2h_sheet_url';
 const LS_TOL = '2h_tolerance';
 const DEFAULT_TOL = 0.5;
-const LS_COMBO_DATA   = '2h_combo_data';     // comboMap đã lưu (Nguồn 3 — cố định, dùng chung mọi shop)
+const LS_COMBO_DATA   = '2h_combo_data';     // comboMap đã lưu (Nguồn 2 — cố định, dùng chung mọi shop)
 const LS_COMBO_META   = '2h_combo_meta';
+const LS_SKUMAP_DATA  = '2h_skumap_data';    // singleSkuMap đã lưu (Nguồn 2 — mã phân loại → SKU của SP lẻ)
 
 let masterMap   = null;
 let masterMeta  = { skus: 0, nccs: 0, loadedAt: null };
-let mappingMap  = null;   // Mã Phân loại → SKU (from Mass Update file)
-let mappingMeta = { count: 0 };
-let comboMap    = null;   // Mã Phân loại → [{sku, qty}] (from DS SanPham file)
+let comboMap     = null;   // Mã Phân loại → [{sku, qty}] (from DS SanPham file — Nguồn 2)
+let singleSkuMap = null;   // Mã Phân loại → SKU của SP lẻ (from DS SanPham file — Nguồn 2)
 let comboMeta   = { count: 0, singles: 0 };
 let priceFiles  = [];   // [{name, bytes}]
 let allRows     = [];
@@ -299,26 +285,27 @@ window.addEventListener('DOMContentLoaded', () => {
   if (url) loadMaster(false);
   else { setStatus('err', 'Chưa cấu hình nguồn dữ liệu', 'Bấm ⚙ Cấu hình để nhập link Google Sheets'); toggleConfig(); }
   setupDrop();
-  setupMappingInput();
   setupComboInput();
   loadSavedCombo();
 });
 
-// ── Khôi phục combo (Nguồn 3) đã lưu từ lần upload trước (localStorage) ────
-// Nguồn 3 (DS SanPham) cố định, dùng chung cho mọi shop nên không cần upload lại mỗi lần.
-// Nguồn 2 (Mass Update mapping) KHÔNG lưu — vì dữ liệu khác nhau theo từng shop, luôn cần upload đúng file của shop đang kiểm tra.
+// ── Khôi phục combo (Nguồn 2) đã lưu từ lần upload trước (localStorage) ────
+// Nguồn 2 (DS SanPham) cố định, dùng chung cho mọi shop nên không cần upload lại mỗi lần.
 function loadSavedCombo() {
   const saved = localStorage.getItem(LS_COMBO_DATA);
   const meta  = localStorage.getItem(LS_COMBO_META);
   if (!saved || !meta) return;
   try {
-    comboMap  = JSON.parse(saved);
-    comboMeta = JSON.parse(meta);
+    comboMap     = JSON.parse(saved);
+    comboMeta    = JSON.parse(meta);
+    const savedSku = localStorage.getItem(LS_SKUMAP_DATA);
+    singleSkuMap = savedSku ? JSON.parse(savedSku) : null;
     const dot = document.getElementById('comboDot');
     const txt = document.getElementById('comboText');
     const sub = document.getElementById('comboSub');
     dot.className = 'status-dot dot-ok';
-    txt.textContent = `✅ ${(comboMeta.count||0).toLocaleString()} combo đã khai báo (đã lưu)`;
+    const nSku = singleSkuMap ? Object.keys(singleSkuMap).length : 0;
+    txt.textContent = `✅ ${(comboMeta.count||0).toLocaleString()} combo + ${nSku.toLocaleString()} SKU SP lẻ (đã lưu)`;
     sub.textContent = `${comboMeta.fileName || ''} — lưu lúc ${comboMeta.savedAt ? new Date(comboMeta.savedAt).toLocaleString('vi-VN') : ''}`;
   } catch(e) {
     console.error('Lỗi khôi phục combo đã lưu:', e);
@@ -329,11 +316,13 @@ function clearSavedCombo() {
   if (!confirm('Xoá dữ liệu combo đã lưu? Bạn sẽ cần upload lại file DS SanPham MAP Salework.')) return;
   localStorage.removeItem(LS_COMBO_DATA);
   localStorage.removeItem(LS_COMBO_META);
+  localStorage.removeItem(LS_SKUMAP_DATA);
   comboMap = null;
+  singleSkuMap = null;
   comboMeta = { count: 0, singles: 0 };
   document.getElementById('comboDot').className = 'status-dot dot-idle';
   document.getElementById('comboText').textContent = 'Chưa tải file danh sách sản phẩm';
-  document.getElementById('comboSub').textContent = 'Upload file DS SanPham MAP Salework (.xlsx) — dùng để validate giá combo';
+  document.getElementById('comboSub').textContent = 'Upload file DS SanPham MAP Salework (.xlsx) — dùng để validate giá combo + tra SKU SP lẻ';
 }
 
 // ── Config UI ────────────────────────────────────────────────────────────
@@ -483,92 +472,6 @@ function normSku(val) {
   return s;
 }
 
-// ── Mapping file (Mass Update Sales Info) ────────────────────────────────
-function setupMappingInput() {
-  document.getElementById('mappingInput').addEventListener('change', e => {
-    if (e.target.files[0]) handleMappingFile(e.target.files[0]);
-  });
-}
-
-function handleMappingFile(file) {
-  const dot  = document.getElementById('mappingDot');
-  const txt  = document.getElementById('mappingText');
-  const sub  = document.getElementById('mappingSub');
-  dot.className = 'status-dot dot-loading';
-  txt.textContent = 'Đang đọc file mapping...';
-  sub.textContent = file.name;
-
-  const reader = new FileReader();
-  reader.onload = e => {
-    try {
-      const bytes = new Uint8Array(e.target.result);
-      mappingMap  = parseMappingFromXlsx(bytes);
-      mappingMeta = { count: Object.keys(mappingMap).length, fileName: file.name };
-      dot.className = 'status-dot dot-ok';
-      txt.textContent = `✅ ${mappingMeta.count.toLocaleString()} mã phân loại đã mapping`;
-      sub.textContent = file.name;
-    } catch(err) {
-      dot.className = 'status-dot dot-err';
-      txt.textContent = '❌ Không đọc được file mapping';
-      sub.textContent = err.message;
-      console.error(err);
-    }
-  };
-  reader.readAsArrayBuffer(file);
-}
-
-function parseMappingFromXlsx(bytes) {
-  const wb  = XLSX.read(bytes, { type: 'array' });
-  const ws  = wb.Sheets[wb.SheetNames[0]];
-  const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
-
-  const norm = h => (h || '').toString().toLowerCase().replace(/\s+/g, '');
-
-  // Tìm dòng header: phải có cả "Mã Phân loại" và "SKU"
-  let hIdx = 0;
-  for (let i = 0; i < Math.min(10, raw.length); i++) {
-    const row = (raw[i] || []);
-    const ns  = row.map(c => norm(c));
-    if (ns.some(n => n === 'mãphânloại') && ns.some(n => n === 'sku')) {
-      hIdx = i; break;
-    }
-  }
-
-  const headers = (raw[hIdx] || []).map(h => (h || '').toString().trim());
-
-  // Cấu trúc file Mass Update:
-  // Cột E (index 4) = "SKU Sản phẩm" — dành cho SP KHÔNG có phân loại (single product)
-  // Cột F (index 5) = "SKU"           — dành cho SP CÓ nhiều phân loại (variation SKU)
-  // Ưu tiên: Cột F ("SKU") trước → nếu trống → lấy Cột E ("SKU Sản phẩm")
-  let cMaPL = -1, cSkuF = -1, cSkuE = -1;
-
-  for (let i = 0; i < headers.length; i++) {
-    const n = norm(headers[i]);
-    if (n === 'mãphânloại'  && cMaPL  < 0) cMaPL  = i; // "Mã Phân loại" (cột C)
-    if (n === 'sku'          && cSkuF  < 0) cSkuF  = i; // "SKU" exact (cột F) — variation SKU
-    if (n === 'skusảnphẩm'  && cSkuE  < 0) cSkuE  = i; // "SKU Sản phẩm" (cột E) — product SKU
-  }
-  // Fallback partial
-  if (cMaPL < 0) cMaPL = headers.findIndex(h => norm(h).includes('phânloại') && !norm(h).includes('hàng'));
-  if (cSkuF < 0) cSkuF = headers.findIndex(h => norm(h) === 'sku');
-  if (cSkuE < 0) cSkuE = headers.findIndex(h => norm(h).includes('sku') && norm(h).includes('sảnphẩm'));
-
-  if (cMaPL < 0 || (cSkuF < 0 && cSkuE < 0))
-    throw new Error(`Không tìm thấy cột "Mã Phân loại" hoặc cột SKU trong file mapping`);
-
-  const map = {};
-  for (let i = hIdx + 1; i < raw.length; i++) {
-    const row = raw[i];
-    if (!row) continue;
-    const maPL = normSku(row[cMaPL] || '');
-    if (!maPL) continue; // bỏ dòng metadata/trống
-    // Ưu tiên: SKU cột F (variation SKU) → fallback: SKU Sản phẩm cột E (product SKU)
-    const sku = normSku(cSkuF >= 0 ? (row[cSkuF] || '') : '')
-             || normSku(cSkuE >= 0 ? (row[cSkuE] || '') : '');
-    if (sku) map[maPL] = sku;
-  }
-  return map;
-}
 
 // ── Combo source file (DS SanPham MAP Salework) ───────────────────────────
 function setupComboInput() {
@@ -589,14 +492,17 @@ function handleComboFile(file) {
     try {
       const bytes = new Uint8Array(e.target.result);
       const result = parseComboFromXlsx(bytes);
-      comboMap  = result.map;
+      comboMap     = result.map;
+      singleSkuMap = result.skuMap;
       comboMeta = { count: result.comboCount, singles: result.singleCount, fileName: file.name, savedAt: Date.now() };
       dot.className = 'status-dot dot-ok';
-      txt.textContent = `✅ ${comboMeta.count.toLocaleString()} combo đã khai báo (${comboMeta.singles.toLocaleString()} SP lẻ bỏ qua)`;
+      const nSku = Object.keys(singleSkuMap).length;
+      txt.textContent = `✅ ${comboMeta.count.toLocaleString()} combo + ${nSku.toLocaleString()} SKU SP lẻ đã khai báo`;
       sub.textContent = file.name;
       try {
         localStorage.setItem(LS_COMBO_DATA, JSON.stringify(comboMap));
         localStorage.setItem(LS_COMBO_META, JSON.stringify(comboMeta));
+        localStorage.setItem(LS_SKUMAP_DATA, JSON.stringify(singleSkuMap));
       } catch(e2) {
         console.error('Không lưu được combo vào localStorage (có thể do dữ liệu quá lớn):', e2);
       }
@@ -614,7 +520,8 @@ function parseComboFromXlsx(bytes) {
   const wb  = XLSX.read(bytes, { type: 'array' });
   const norm = s => (s || '').toString().toLowerCase().replace(/\s+/g, '');
 
-  const map = {};         // mãPhânLoại → [{sku, qty}]
+  const map = {};         // mãPhânLoại → [{sku, qty}]  (combo)
+  const skuMap = {};      // mãPhânLoại → SKU            (SP lẻ)
   let comboCount  = 0;
   let singleCount = 0;
 
@@ -655,9 +562,11 @@ function parseComboFromXlsx(bytes) {
       const compSku = normSku(cComp  >= 0 ? (row[cComp]  || '') : '');
       const qty    = cQty >= 0 ? (parseFloat(String(row[cQty] || '0')) || 0) : 1;
 
-      // SP lẻ: SKU Shopee (H) có giá trị → đã có trong mappingMap từ Mass Update, bỏ qua
+      // SP lẻ: SKU Shopee (H) có giá trị → lưu vào skuMap (mãPhânLoại → SKU)
+      // Khai thác cột "SKU Shopee" có sẵn trong Nguồn 2 để tra SKU SP lẻ — không cần file mapping riêng nữa.
       if (skuSP) {
         singleCount++;
+        if (!skuMap[maPL]) skuMap[maPL] = skuSP;
         continue;
       }
 
@@ -673,7 +582,7 @@ function parseComboFromXlsx(bytes) {
     }
   }
 
-  return { map, comboCount, singleCount };
+  return { map, skuMap, comboCount, singleCount };
 }
 
 // ── Price file upload ─────────────────────────────────────────────────────
@@ -797,13 +706,14 @@ function validateSingleFile(bytes, fileName) {
     dataStart = hIdx + (hasMetaRow ? 3 : 1);
   }
 
-  // Cảnh báo nếu eligible mà chưa có mapping
-  if (fmt === 'eligible' && (!mappingMap || Object.keys(mappingMap).length === 0)) {
+  // Cảnh báo nếu eligible mà chưa có nguồn tra SKU nào (Nguồn 2 — DS SanPham MAP Salework)
+  const hasSkuSource = singleSkuMap && Object.keys(singleSkuMap).length > 0;
+  if (fmt === 'eligible' && !hasSkuSource) {
     const proceed = confirm(
-      '⚠️ File này là Eligible Product List và cần file mapping để tra SKU.\n\n' +
-      'Bạn chưa tải file Mass Update Sales Info.\n\n' +
+      '⚠️ File này là Eligible Product List và cần dữ liệu để tra SKU.\n\n' +
+      'Bạn chưa tải file DS SanPham MAP Salework (Nguồn 2).\n\n' +
       'Tiếp tục sẽ đánh dấu tất cả dòng là "Không tìm được SKU".\n' +
-      'Bấm Huỷ để quay lại tải file mapping trước.'
+      'Bấm Huỷ để quay lại tải file nguồn dữ liệu trước.'
     );
     if (!proceed) {
       document.getElementById('loadingRow').style.display = 'none';
@@ -867,14 +777,17 @@ function validateSingleFile(bytes, fileName) {
     if (fmt === 'eligible') {
       maPLH = normSku(row[cMaPLH] || '');
       tenPL = cTenPL >= 0 ? (row[cTenPL] || '').toString().trim() : '';
-      // Tra SKU qua mapping
-      sku = (maPLH && mappingMap) ? (mappingMap[maPLH] || '') : '';
+      // Tra SKU qua Nguồn 2 (singleSkuMap, từ DS SanPham MAP Salework)
+      sku = (maPLH && singleSkuMap) ? (singleSkuMap[maPLH] || '') : '';
     } else {
       // Ưu tiên SKU phân loại (cột F) → fallback SKU sản phẩm (cột C) khi SP chỉ có 1 phân loại
       sku   = normSku(row[cSku] || '')
            || normSku(cSkuParent >= 0 ? (row[cSkuParent] || '') : '');
       maPLH = cMaPLH >= 0 ? normSku(row[cMaPLH] || '') : '';
       tenPL = '';
+      // Một số dòng (đặc biệt SP combo) không có SKU trong file gốc lẫn SKU sản phẩm
+      // → tra tiếp qua Nguồn 2 (singleSkuMap, mã phân loại → SKU) trước khi coi là combo/không có SKU
+      if (!sku && maPLH && singleSkuMap) sku = singleSkuMap[maPLH] || '';
     }
 
     const giaF = parseFloat(String(row[cGia] || '').replace(/,/g, '')) || null;
@@ -949,11 +862,11 @@ function validateSingleFile(bytes, fileName) {
           type = 'nomap';
           errs.push('Combo chưa khai báo thành phần trong file DS SanPham');
         } else {
-          // Không phải combo, không có trong Mass Update
+          // Không phải combo, không tra được SKU từ Nguồn 2 (DS SanPham MAP Salework)
           type = 'nomap';
-          errs.push(mappingMap
+          errs.push(hasSkuSource
             ? 'Chưa có barcode — cần cập nhật SKU trong Shopee'
-            : 'Chưa tải file mapping — không tra được SKU');
+            : 'Chưa tải file DS SanPham (Nguồn 2) — không tra được SKU');
         }
 
       } else if (!m) {
