@@ -409,6 +409,9 @@ function parseCsv(text) {
       ncc:    ['ncc','nhàcungcấp','supplier','nxb'],
       // 'giá' đặt sau để tránh match sớm khi cột tên là "Giá gốc"
       giaGoc: ['giágốc','giagoc','gốc','price','giá'],
+      // "Giá bán" (cột E theo anh Đức) = giá bán chuẩn được phép — tách riêng với "Giá gốc"
+      // → để khớp đúng cần kiểm tra TRƯỚC keyword 'giá' chung của giaGoc (xem ci() bên dưới)
+      giaBan: ['giábán','giaban'],
       pctMax: ['%giảm','%giam','giảmtốiđa','pctmax','discount'],
       tenSP:  ['tên','ten','sảnphẩm','name']
     };
@@ -418,7 +421,7 @@ function parseCsv(text) {
     }
     return -1;
   };
-  const iSku = ci('sku'), iNcc = ci('ncc'), iGia = ci('giaGoc'), iPct = ci('pctMax'), iTen = ci('tenSP');
+  const iSku = ci('sku'), iNcc = ci('ncc'), iGia = ci('giaGoc'), iGiaBan = ci('giaBan'), iPct = ci('pctMax'), iTen = ci('tenSP');
 
   // Parse số kiểu Việt Nam: 99.000 → 99000 | 1.200.000 → 1200000
   // Dấu chấm là phân cách hàng nghìn, dấu phẩy là thập phân
@@ -441,6 +444,7 @@ function parseCsv(text) {
     const entry = {
       ncc:    (cols[iNcc] || '').trim(),
       giaGoc: parseVNNum(cols[iGia]),
+      giaBan: iGiaBan >= 0 ? parseVNNum(cols[iGiaBan]) : null, // Giá bán chuẩn được phép (cột E) — dùng đối chiếu combo
       pctMax: pctRaw !== '' ? (parseFloat(pctRaw) ?? null) : null,
       tenSP:  iTen >= 0 ? (cols[iTen] || '').trim() : ''
     };
@@ -862,7 +866,11 @@ function validateSingleFile(bytes, fileName) {
     let type = 'ok';
 
     // Thông tin bổ sung cho combo (sẽ dùng khi render bảng)
+    // comboGiaBan = tổng (Giá bán chuẩn × SL) của các SKU thành phần — dùng để ĐỐI CHIẾU thêm
+    // (cảnh báo) "Giá đã giảm" combo, KHÔNG thay cách kiểm tra %NCC cũ. Khi đủ dữ liệu (mọi thành
+    // phần đều có "Giá bán" trong Google Sheets chuẩn) sẽ ưu tiên dùng số này khi xuất file sửa giá.
     let isCombo = false, comboGiaGoc = null, comboPctMax = null, comboComponents = null;
+    let comboGiaBan = null, comboGiaBanOk = false;
 
     if (fmt === 'eligible') {
       if (!maPLH) {
@@ -892,11 +900,17 @@ function validateSingleFile(bytes, fileName) {
           const missingSkus = [];
           const pctVals = [];
           const nccSet = new Set();
+          // Tổng Giá bán chuẩn (cột E Google Sheets) của từng thành phần — chỉ tính được khi
+          // TẤT CẢ thành phần đều có Giá bán; dùng để đối chiếu thêm, không thay cách tính %.
+          let calcGiaBan = 0;
+          let giaBanOk = true;
 
           for (const comp of comboComps) {
             const mc = masterMap[comp.sku];
             if (!mc) { calcOk = false; missingSkus.push(comp.sku); continue; }
             calcGiaGoc += (mc.giaGoc || 0) * comp.qty;
+            if (mc.giaBan != null) calcGiaBan += mc.giaBan * comp.qty;
+            else giaBanOk = false;
             if (mc.pctMax !== null) pctVals.push(mc.pctMax);
             if (mc.ncc) nccSet.add(mc.ncc);
           }
@@ -904,6 +918,8 @@ function validateSingleFile(bytes, fileName) {
           comboGiaGoc = calcGiaGoc;
           // pctMax combo = min(pctMax thành phần) + COMBO_BONUS_PCT
           comboPctMax = pctVals.length > 0 ? Math.min(...pctVals) + COMBO_BONUS_PCT : null;
+          comboGiaBanOk = calcOk && giaBanOk && calcGiaBan > 0;
+          comboGiaBan = comboGiaBanOk ? calcGiaBan : null;
 
           if (!calcOk) {
             type = 'nomaster';
@@ -921,6 +937,9 @@ function validateSingleFile(bytes, fileName) {
               const pct = (calcGiaGoc - giaF) / calcGiaGoc * 100;
               if (comboPctMax !== null && pct > comboPctMax + tolerance)
                 errs.push(`% giảm ${pct.toFixed(1)}% vượt mức cho phép (${comboPctMax}% = min NCC ${Math.min(...pctVals)}% + ${COMBO_BONUS_PCT}% bonus combo)`);
+              // Đối chiếu thêm với tổng Giá bán chuẩn của thành phần (cảnh báo, không thay %)
+              if (comboGiaBanOk && Math.abs(giaF - comboGiaBan) > 1)
+                errs.push(`Giá KM combo (${fmtN(giaF)}) lệch tổng Giá bán chuẩn thành phần (${fmtN(comboGiaBan)})`);
             }
             if (errs.length) type = 'err';
             // Gán thêm thông tin NCC và tên cho row
@@ -976,15 +995,21 @@ function validateSingleFile(bytes, fileName) {
           comboComponents = comboComps;
           let calcGiaGoc = 0, calcOk = true;
           const missingSkus = [], pctVals = [], nccSet = new Set();
+          // Tổng Giá bán chuẩn (cột E Google Sheets) của thành phần — đối chiếu thêm, không thay %
+          let calcGiaBan = 0, giaBanOk = true;
           for (const comp of comboComps) {
             const mc = masterMap[comp.sku];
             if (!mc) { calcOk = false; missingSkus.push(comp.sku); continue; }
             calcGiaGoc += (mc.giaGoc || 0) * comp.qty;
+            if (mc.giaBan != null) calcGiaBan += mc.giaBan * comp.qty;
+            else giaBanOk = false;
             if (mc.pctMax !== null) pctVals.push(mc.pctMax);
             if (mc.ncc) nccSet.add(mc.ncc);
           }
           comboGiaGoc = calcGiaGoc;
           comboPctMax = pctVals.length > 0 ? Math.min(...pctVals) + COMBO_BONUS_PCT : null;
+          comboGiaBanOk = calcOk && giaBanOk && calcGiaBan > 0;
+          comboGiaBan = comboGiaBanOk ? calcGiaBan : null;
           if (!calcOk) {
             type = 'nomaster';
             errs.push(`Combo: ${missingSkus.length} thành phần chưa có trong dữ liệu chuẩn (${missingSkus.join(', ')})`);
@@ -1000,6 +1025,9 @@ function validateSingleFile(bytes, fileName) {
               const pct = (calcGiaGoc - giaF) / calcGiaGoc * 100;
               if (comboPctMax !== null && pct > comboPctMax + tolerance)
                 errs.push(`% giảm ${pct.toFixed(1)}% vượt mức cho phép (${comboPctMax}% = min NCC ${Math.min(...pctVals)}% + ${COMBO_BONUS_PCT}% bonus combo)`);
+              // Đối chiếu thêm với tổng Giá bán chuẩn của thành phần (cảnh báo, không thay %)
+              if (comboGiaBanOk && Math.abs(giaF - comboGiaBan) > 1)
+                errs.push(`Giá đã giảm combo (${fmtN(giaF)}) lệch tổng Giá bán chuẩn thành phần (${fmtN(comboGiaBan)})`);
             }
             if (errs.length) type = 'err';
             sku = 'COMBO';
@@ -1055,6 +1083,9 @@ function validateSingleFile(bytes, fileName) {
       pctMax: isCombo ? comboPctMax : m?.pctMax,
       isCombo,
       comboComponents,
+      // Tổng "Giá bán" chuẩn (cột E Google Sheets) của thành phần combo — null nếu thiếu dữ liệu
+      // ở bất kỳ thành phần nào. Dùng để đối chiếu thêm + ưu tiên khi xuất file sửa giá.
+      comboGiaBan: isCombo ? comboGiaBan : null,
       errs,
       type
     });
@@ -1403,12 +1434,17 @@ function exportFile() {
 // Công thức: giá đúng = giá gốc chuẩn (hoặc giá gốc combo) × (1 − %max cho phép)
 // r.ggMaster và r.pctMax đã được tính sẵn ở validateSingleFile() cho cả SP lẻ và combo
 // → dùng chung 1 công thức, không cần phân biệt combo / không combo.
+// RIÊNG combo: nếu đủ dữ liệu "Giá bán" (cột E Google Sheets) ở MỌI thành phần
+// (r.comboGiaBan != null) thì ưu tiên dùng luôn tổng Giá bán thành phần làm "Giá đã giảm" đúng —
+// chính xác hơn vì dùng số thật, không qua tính %. Nếu thiếu dữ liệu thì fallback về cách tính % cũ.
 function computeCorrectedPrice(r) {
   const baseGoc = r.ggMaster;
   if (baseGoc == null || isNaN(baseGoc) || baseGoc <= 0) return null; // không có giá chuẩn để sửa
 
   let gd;
-  if (r.pctMax != null && !isNaN(r.pctMax)) {
+  if (r.isCombo && r.comboGiaBan != null && !isNaN(r.comboGiaBan) && r.comboGiaBan > 0) {
+    gd = Math.round(r.comboGiaBan);
+  } else if (r.pctMax != null && !isNaN(r.pctMax)) {
     gd = Math.round(baseGoc * (1 - r.pctMax / 100));
   } else if (r.gd != null && !isNaN(r.gd) && r.gd > 0 && r.gd <= baseGoc) {
     // Không có %max chuẩn → giữ giá KM cũ nếu nó hợp lệ (≤ giá gốc)
