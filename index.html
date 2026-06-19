@@ -185,7 +185,6 @@ tr.r-miss { background: #faf0ff !important; }
     </div>
     <span class="mapping-label">NGUỒN 2</span>
     <button class="btn-refresh" onclick="document.getElementById('mappingInput').click()" style="background:#f6fff0;color:#27ae60;border-color:#b2dfb2">📂 Tải file mapping</button>
-    <button class="btn-refresh" onclick="clearSavedMapping()" title="Xoá dữ liệu mapping đã lưu, upload lại file mới">🗑 Xoá đã lưu</button>
     <input type="file" id="mappingInput" accept=".xlsx,.xls" style="display:none">
   </div>
 
@@ -273,9 +272,7 @@ tr.r-miss { background: #faf0ff !important; }
 const LS_URL = '2h_sheet_url';
 const LS_TOL = '2h_tolerance';
 const DEFAULT_TOL = 0.5;
-const LS_MAPPING_DATA = '2h_mapping_data';   // mappingMap đã lưu (Nguồn 2)
-const LS_MAPPING_META = '2h_mapping_meta';
-const LS_COMBO_DATA   = '2h_combo_data';     // comboMap đã lưu (Nguồn 3)
+const LS_COMBO_DATA   = '2h_combo_data';     // comboMap đã lưu (Nguồn 3 — cố định, dùng chung mọi shop)
 const LS_COMBO_META   = '2h_combo_meta';
 
 let masterMap   = null;
@@ -304,30 +301,12 @@ window.addEventListener('DOMContentLoaded', () => {
   setupDrop();
   setupMappingInput();
   setupComboInput();
-  loadSavedMapping();
   loadSavedCombo();
 });
 
-// ── Khôi phục mapping/combo đã lưu từ lần upload trước (localStorage) ──────
-// Vì mã hàng mới về không thường xuyên, không cần upload lại file mỗi lần mở tool.
-function loadSavedMapping() {
-  const saved = localStorage.getItem(LS_MAPPING_DATA);
-  const meta  = localStorage.getItem(LS_MAPPING_META);
-  if (!saved || !meta) return;
-  try {
-    mappingMap  = JSON.parse(saved);
-    mappingMeta = JSON.parse(meta);
-    const dot = document.getElementById('mappingDot');
-    const txt = document.getElementById('mappingText');
-    const sub = document.getElementById('mappingSub');
-    dot.className = 'status-dot dot-ok';
-    txt.textContent = `✅ ${Object.keys(mappingMap).length.toLocaleString()} mã phân loại đã mapping (đã lưu)`;
-    sub.textContent = `${mappingMeta.fileName || ''} — lưu lúc ${mappingMeta.savedAt ? new Date(mappingMeta.savedAt).toLocaleString('vi-VN') : ''}`;
-  } catch(e) {
-    console.error('Lỗi khôi phục mapping đã lưu:', e);
-  }
-}
-
+// ── Khôi phục combo (Nguồn 3) đã lưu từ lần upload trước (localStorage) ────
+// Nguồn 3 (DS SanPham) cố định, dùng chung cho mọi shop nên không cần upload lại mỗi lần.
+// Nguồn 2 (Mass Update mapping) KHÔNG lưu — vì dữ liệu khác nhau theo từng shop, luôn cần upload đúng file của shop đang kiểm tra.
 function loadSavedCombo() {
   const saved = localStorage.getItem(LS_COMBO_DATA);
   const meta  = localStorage.getItem(LS_COMBO_META);
@@ -344,17 +323,6 @@ function loadSavedCombo() {
   } catch(e) {
     console.error('Lỗi khôi phục combo đã lưu:', e);
   }
-}
-
-function clearSavedMapping() {
-  if (!confirm('Xoá dữ liệu mapping đã lưu? Bạn sẽ cần upload lại file Mass Update Sales Info.')) return;
-  localStorage.removeItem(LS_MAPPING_DATA);
-  localStorage.removeItem(LS_MAPPING_META);
-  mappingMap = null;
-  mappingMeta = { count: 0 };
-  document.getElementById('mappingDot').className = 'status-dot dot-idle';
-  document.getElementById('mappingText').textContent = 'Chưa tải file mapping';
-  document.getElementById('mappingSub').textContent = 'Upload file Mass Update Sales Info (.xlsx) — cần thiết để kiểm tra file Eligible Product List';
 }
 
 function clearSavedCombo() {
@@ -535,16 +503,10 @@ function handleMappingFile(file) {
     try {
       const bytes = new Uint8Array(e.target.result);
       mappingMap  = parseMappingFromXlsx(bytes);
-      mappingMeta = { count: Object.keys(mappingMap).length, fileName: file.name, savedAt: Date.now() };
+      mappingMeta = { count: Object.keys(mappingMap).length, fileName: file.name };
       dot.className = 'status-dot dot-ok';
       txt.textContent = `✅ ${mappingMeta.count.toLocaleString()} mã phân loại đã mapping`;
       sub.textContent = file.name;
-      try {
-        localStorage.setItem(LS_MAPPING_DATA, JSON.stringify(mappingMap));
-        localStorage.setItem(LS_MAPPING_META, JSON.stringify(mappingMeta));
-      } catch(e2) {
-        console.error('Không lưu được mapping vào localStorage (có thể do dữ liệu quá lớn):', e2);
-      }
     } catch(err) {
       dot.className = 'status-dot dot-err';
       txt.textContent = '❌ Không đọc được file mapping';
