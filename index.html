@@ -833,10 +833,11 @@ function validateSingleFile(bytes, fileName) {
       maSP  = cMaSP  >= 0 ? normSku(row[cMaSP]  || '') : '';
       tenPL = '';
 
-      // Dòng này là biến thể COMBO nếu Mã phân loại hàng (hoặc Mã sản phẩm fallback) đã được
-      // khai báo trong Nguồn 2 (DS SanPham) — kể cả khai báo rỗng/chưa đủ thành phần.
-      const isComboRow = (maPLH && comboMap && (maPLH in comboMap))
-                       || (maSP  && comboMapByPid && (maSP in comboMapByPid));
+      // Dòng này là biến thể COMBO nếu Mã sản phẩm (ưu tiên — Salework dùng "Mã phân loại" = chính
+      // ID SP Shopee cho combo, kể cả khi SP có biến thể riêng) hoặc Mã phân loại hàng (fallback)
+      // đã được khai báo trong Nguồn 2 (DS SanPham) — kể cả khai báo rỗng/chưa đủ thành phần.
+      const isComboRow = (maSP  && comboMapByPid && (maSP in comboMapByPid))
+                       || (maPLH && comboMap && (maPLH in comboMap));
 
       // CHỈ áp dụng thay đổi logic cho COMBO: không dùng "Số SKU Sản phẩm" (cột C — SKU CHUNG
       // của cả sản phẩm) để gán cho biến thể combo, vì với SP có cả biến thể lẻ và biến thể combo,
@@ -869,13 +870,15 @@ function validateSingleFile(bytes, fileName) {
         type = 'warn'; errs.push('Không có Mã phân loại hàng');
 
       } else if (!sku) {
-        // Không tra được SKU → kiểm tra có phải combo không (tra theo Mã phân loại hàng,
-        // fallback theo Mã sản phẩm/ID SP Shopee nếu Mã phân loại hàng không khớp Nguồn 2)
-        let comboComps = comboMap ? comboMap[maPLH] : null;
-        let viaPid = false;
-        if ((!comboComps || comboComps.length === 0) && maSP && comboMapByPid && comboMapByPid[maSP]) {
-          comboComps = comboMapByPid[maSP];
-          viaPid = true;
+        // Không tra được SKU → kiểm tra có phải combo không. Ưu tiên tra theo Mã sản phẩm
+        // (ID SP Shopee) khớp với "Mã phân loại" ở Salework — vì Salework dùng chính ID SP Shopee
+        // làm "Mã phân loại" cho combo, kể cả khi SP có biến thể riêng trên Shopee.
+        // Mã phân loại hàng chỉ dùng làm fallback phụ.
+        let comboComps = (maSP && comboMapByPid) ? comboMapByPid[maSP] : null;
+        let viaPid = !!(comboComps && comboComps.length > 0);
+        if ((!comboComps || comboComps.length === 0) && maPLH && comboMap && comboMap[maPLH]) {
+          comboComps = comboMap[maPLH];
+          viaPid = false;
         }
 
         if (comboComps && comboComps.length > 0) {
@@ -925,8 +928,8 @@ function validateSingleFile(bytes, fileName) {
             // ncc sẽ được gán sau
           }
 
-        } else if ((comboMap && maPLH in comboMap) || (maSP && comboMapByPid && maSP in comboMapByPid)) {
-          // comboMap/comboMapByPid có key nhưng array rỗng → combo chưa khai báo thành phần
+        } else if ((maSP && comboMapByPid && maSP in comboMapByPid) || (comboMap && maPLH in comboMap)) {
+          // comboMapByPid/comboMap có key nhưng array rỗng → combo chưa khai báo thành phần
           type = 'nomap';
           errs.push('Combo chưa khai báo thành phần trong file DS SanPham');
         } else {
@@ -960,11 +963,12 @@ function validateSingleFile(bytes, fileName) {
       // discount nomination
       if (!sku) {
         if (!giaF && !ten) continue; // dòng hoàn toàn rỗng
-        // Kiểm tra có phải combo không (tra maPLH vào comboMap, fallback theo Mã sản phẩm/ID SP Shopee
-        // khi Mã phân loại hàng của file đẩy sàn không khớp Mã phân loại trong Nguồn 2)
-        let comboComps = (maPLH && comboMap) ? comboMap[maPLH] : null;
-        if ((!comboComps || comboComps.length === 0) && maSP && comboMapByPid && comboMapByPid[maSP]) {
-          comboComps = comboMapByPid[maSP];
+        // Kiểm tra có phải combo không. Ưu tiên tra theo Mã sản phẩm (ID SP Shopee) khớp với
+        // "Mã phân loại" ở Salework — vì Salework dùng chính ID SP Shopee làm "Mã phân loại" cho
+        // combo, kể cả khi SP có biến thể riêng trên Shopee. Mã phân loại hàng chỉ là fallback phụ.
+        let comboComps = (maSP && comboMapByPid) ? comboMapByPid[maSP] : null;
+        if ((!comboComps || comboComps.length === 0) && maPLH && comboMap && comboMap[maPLH]) {
+          comboComps = comboMap[maPLH];
         }
         if (comboComps && comboComps.length > 0) {
           // ── COMBO VALIDATION (discount) ───────────────────────────
@@ -1000,7 +1004,7 @@ function validateSingleFile(bytes, fileName) {
             if (errs.length) type = 'err';
             sku = 'COMBO';
           }
-        } else if ((maPLH && comboMap && maPLH in comboMap) || (maSP && comboMapByPid && maSP in comboMapByPid)) {
+        } else if ((maSP && comboMapByPid && maSP in comboMapByPid) || (maPLH && comboMap && maPLH in comboMap)) {
           type = 'nomap';
           errs.push('Combo chưa khai báo thành phần trong file DS SanPham');
         } else {
