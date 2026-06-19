@@ -240,6 +240,12 @@ tr.r-miss { background: #faf0ff !important; }
         <button class="btn-export" id="btnExport" onclick="exportFile()">⬇ Xuất</button>
         <button class="btn-export" id="btnExportFixed" onclick="exportCorrectedFiles()" style="background:#4a6cf7" title="Tự động điền giá đúng vào các dòng lỗi giá, giữ nguyên định dạng file gốc để upload lại Shopee">📥 Xuất file đã sửa giá</button>
       </div>
+      <div style="margin-bottom:12px;position:relative;max-width:420px">
+        <input type="text" id="searchBox" placeholder="🔍 Tìm theo SKU, Mã phân loại hoặc Tên sản phẩm..."
+          oninput="onSearchInput(this.value)"
+          style="width:100%;padding:8px 32px 8px 12px;border:1.5px solid #dde2ea;border-radius:8px;font-size:13px;box-sizing:border-box">
+        <span id="searchClear" onclick="clearSearch()" style="display:none;position:absolute;right:10px;top:50%;transform:translateY(-50%);cursor:pointer;color:#999;font-size:14px">✕</span>
+      </div>
       <div class="table-wrap">
         <table>
           <thead id="tableHead"></thead>
@@ -279,6 +285,7 @@ let allRows     = [];
 let fileResults = [];   // [{name, fmt, raw, cGG, cGia}] — dữ liệu thô từng file để xuất file đã sửa giá
 let curFilter   = 'all';
 let curPage     = 1;
+let searchQuery = ''; // đã fold dấu (foldAccent), dùng để tìm SKU/Mã phân loại/Tên sản phẩm trong bảng kết quả
 let curFmt      = 'discount'; // 'discount' | 'eligible'
 const PG = 50;
 const COMBO_BONUS_PCT = 2; // combo được thêm 2% discount so với SP lẻ
@@ -1241,14 +1248,45 @@ function renderResults() {
   renderTable();
 }
 
+// Bỏ dấu tiếng Việt + lowercase, dùng cho ô tìm kiếm (gõ không dấu vẫn tìm ra "Sách" v.v.)
+function foldAccent(s) {
+  return (s || '').toString().toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd'); // đ → d
+}
+
+function onSearchInput(val) {
+  searchQuery = foldAccent(val);
+  document.getElementById('searchClear').style.display = searchQuery ? '' : 'none';
+  curPage = 1;
+  renderTable();
+}
+
+function clearSearch() {
+  document.getElementById('searchBox').value = '';
+  searchQuery = '';
+  document.getElementById('searchClear').style.display = 'none';
+  curPage = 1;
+  renderTable();
+}
+
 function getFiltered() {
-  if (curFilter==='err')     return allRows.filter(r=>r.type==='err');
-  if (curFilter==='miss')    return allRows.filter(r=>r.type==='nomap'||r.type==='nomaster');
-  if (curFilter==='nomap')   return allRows.filter(r=>r.type==='nomap');
-  if (curFilter==='nomaster')return allRows.filter(r=>r.type==='nomaster');
-  if (curFilter==='warn')    return allRows.filter(r=>r.type==='warn');
-  if (curFilter==='ok')      return allRows.filter(r=>r.type==='ok');  // chỉ lấy hợp lệ thực sự, không lấy warn
-  return allRows;
+  let list;
+  if (curFilter==='err')     list = allRows.filter(r=>r.type==='err');
+  else if (curFilter==='miss')    list = allRows.filter(r=>r.type==='nomap'||r.type==='nomaster');
+  else if (curFilter==='nomap')   list = allRows.filter(r=>r.type==='nomap');
+  else if (curFilter==='nomaster')list = allRows.filter(r=>r.type==='nomaster');
+  else if (curFilter==='warn')    list = allRows.filter(r=>r.type==='warn');
+  else if (curFilter==='ok')      list = allRows.filter(r=>r.type==='ok');  // chỉ lấy hợp lệ thực sự, không lấy warn
+  else list = allRows;
+
+  if (searchQuery) {
+    list = list.filter(r => {
+      const haystack = foldAccent([r.sku, r.maPLH, r.ten].filter(Boolean).join(' | '));
+      return haystack.includes(searchQuery);
+    });
+  }
+  return list;
 }
 
 function renderTable() {
@@ -1507,6 +1545,19 @@ function toCleanNumber(v) {
   return isNaN(n) ? v : Math.round(n);
 }
 
+// File Shopee xuất ra thường lưu cột Giá gốc/Giá đã giảm dưới dạng TEXT có hậu tố ".00"
+// (VD: "78000.00" — kiểu chuỗi, không phải số) → khi up lại lên Shopee dễ bị lỗi định dạng.
+// Hàm này CHỈ đổi ĐỊNH DẠNG (text số → số thật), KHÔNG đổi giá trị: "78000.00" → 78000.
+// Nếu nội dung không phải số thuần (vd để trống, hoặc là chữ tiêu đề) thì giữ nguyên y như cũ.
+function normalizePriceCell(v) {
+  if (v === null || v === undefined || v === '') return v;
+  if (typeof v === 'number') return v;
+  const s = String(v).trim();
+  if (!/^-?\d+([.,]\d+)?$/.test(s)) return v;
+  const num = parseFloat(s.replace(/,/g, ''));
+  return isNaN(num) ? v : num;
+}
+
 function exportCorrectedFiles() {
   const errRows = allRows.filter(r => r.type === 'err');
   if (!errRows.length) {
@@ -1526,10 +1577,21 @@ function exportCorrectedFiles() {
     const rawCopy = fr.raw.map(row => row ? row.slice() : row);
     const rowsForFile = errRows.filter(r => r.fileName === fr.name);
 
-    // Chỉ đụng vào đúng các dòng "Có lỗi giá" (type === 'err') — chuẩn hoá số sạch (tránh lẫn
-    // text "78000.00" với số 78000) RỒI ghi đè giá đúng, tất cả trong cùng 1 bước.
-    // Các dòng khác (Không có SKU / SKU chưa có chuẩn / Chưa có barcode...) KHÔNG được chạm tới —
-    // giữ nguyên 100% giá trị gốc khi xuất file, theo yêu cầu của anh Đức.
+    // Chuẩn hoá ĐỊNH DẠNG cột Giá gốc/Giá đã giảm về số sạch cho TẤT CẢ các dòng (kể cả dòng
+    // không lỗi giá) — vì file Shopee xuất ra thường lưu giá dạng text "78000.00" (có hậu tố .00),
+    // up lại Shopee dễ bị lỗi. Chỉ đổi text→số, KHÔNG đổi GIÁ TRỊ của các dòng không bị sửa giá —
+    // "78000.00" và 78000 là cùng 1 giá trị, chỉ khác định dạng lưu trữ.
+    if (fr.cGG >= 0 || fr.cGia >= 0) {
+      for (const rowArr of rawCopy) {
+        if (!rowArr) continue;
+        if (fr.cGG >= 0)  rowArr[fr.cGG]  = normalizePriceCell(rowArr[fr.cGG]);
+        if (fr.cGia >= 0) rowArr[fr.cGia] = normalizePriceCell(rowArr[fr.cGia]);
+      }
+    }
+
+    // Chỉ đụng vào đúng các dòng "Có lỗi giá" (type === 'err') — ghi đè giá đúng đã tính lại.
+    // Các dòng khác (Không có SKU / SKU chưa có chuẩn / Chưa có barcode...) KHÔNG bị đổi GIÁ TRỊ —
+    // giữ nguyên 100% giá trị gốc khi xuất file, theo yêu cầu của anh Đức (chỉ format số được chuẩn hoá ở trên).
     for (const r of rowsForFile) {
       const idx = r.rowNum - 1;
       if (idx < 0 || idx >= rawCopy.length || !rawCopy[idx]) { skippedCount++; continue; }
