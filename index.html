@@ -826,13 +826,26 @@ function validateSingleFile(bytes, fileName) {
       // Fallback: Mã phân loại hàng không khớp Nguồn 2 → tra theo Mã sản phẩm (ID SP Shopee)
       if (!sku && maSP && singleSkuMapByPid) sku = singleSkuMapByPid[maSP] || '';
     } else {
-      // Ưu tiên SKU phân loại (cột F) → fallback SKU sản phẩm (cột C) khi SP chỉ có 1 phân loại
-      sku   = normSku(row[cSku] || '')
-           || normSku(cSkuParent >= 0 ? (row[cSkuParent] || '') : '');
+      // Đọc SKU phân loại thật của ĐÚNG biến thể này (cột F) trước, và Mã phân loại hàng để
+      // xác định đây có phải 1 biến thể COMBO đã khai báo ở Nguồn 2 hay không.
+      sku   = normSku(row[cSku] || '');
       maPLH = cMaPLH >= 0 ? normSku(row[cMaPLH] || '') : '';
       maSP  = cMaSP  >= 0 ? normSku(row[cMaSP]  || '') : '';
       tenPL = '';
-      // Một số dòng (đặc biệt SP combo) không có SKU trong file gốc lẫn SKU sản phẩm
+
+      // Dòng này là biến thể COMBO nếu Mã phân loại hàng (hoặc Mã sản phẩm fallback) đã được
+      // khai báo trong Nguồn 2 (DS SanPham) — kể cả khai báo rỗng/chưa đủ thành phần.
+      const isComboRow = (maPLH && comboMap && (maPLH in comboMap))
+                       || (maSP  && comboMapByPid && (maSP in comboMapByPid));
+
+      // CHỈ áp dụng thay đổi logic cho COMBO: không dùng "Số SKU Sản phẩm" (cột C — SKU CHUNG
+      // của cả sản phẩm) để gán cho biến thể combo, vì với SP có cả biến thể lẻ và biến thể combo,
+      // cột C chỉ đại diện cho 1 biến thể (thường là biến thể lẻ) → gán nhầm sẽ kiểm tra sai giá combo.
+      // Với SP lẻ (không phải combo) giữ NGUYÊN logic cũ: vẫn fallback cột C như trước.
+      if (!sku && !isComboRow && cSkuParent >= 0) {
+        sku = normSku(row[cSkuParent] || '');
+      }
+      // Một số dòng (đặc biệt SP combo/SP lẻ chưa khai SKU) không có SKU ở cột F lẫn cột C
       // → tra tiếp qua Nguồn 2 (singleSkuMap, mã phân loại → SKU) trước khi coi là combo/không có SKU
       if (!sku && maPLH && singleSkuMap) sku = singleSkuMap[maPLH] || '';
       // Fallback tiếp theo: Mã phân loại hàng không khớp Nguồn 2 → tra theo Mã sản phẩm (ID SP Shopee)
@@ -1436,15 +1449,10 @@ function exportCorrectedFiles() {
     const rawCopy = fr.raw.map(row => row ? row.slice() : row);
     const rowsForFile = errRows.filter(r => r.fileName === fr.name);
 
-    // Bước 1: chuẩn hoá toàn bộ giá trị cột giá về số sạch (tránh lẫn text "78000.00" với số 78000)
-    for (let idx = 0; idx < rawCopy.length; idx++) {
-      const row = rawCopy[idx];
-      if (!row) continue;
-      if (fr.cGG  >= 0) row[fr.cGG]  = toCleanNumber(row[fr.cGG]);
-      if (fr.cGia >= 0) row[fr.cGia] = toCleanNumber(row[fr.cGia]);
-    }
-
-    // Bước 2: ghi đè giá đúng cho riêng các dòng đang lỗi
+    // Chỉ đụng vào đúng các dòng "Có lỗi giá" (type === 'err') — chuẩn hoá số sạch (tránh lẫn
+    // text "78000.00" với số 78000) RỒI ghi đè giá đúng, tất cả trong cùng 1 bước.
+    // Các dòng khác (Không có SKU / SKU chưa có chuẩn / Chưa có barcode...) KHÔNG được chạm tới —
+    // giữ nguyên 100% giá trị gốc khi xuất file, theo yêu cầu của anh Đức.
     for (const r of rowsForFile) {
       const idx = r.rowNum - 1;
       if (idx < 0 || idx >= rawCopy.length || !rawCopy[idx]) { skippedCount++; continue; }
