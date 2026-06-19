@@ -1430,6 +1430,21 @@ function computeCorrectedPrice(r) {
   return { gg: Math.round(baseGoc), gd };
 }
 
+// File Shopee gốc thường lưu giá dưới dạng CHỮ (ví dụ "78000.00") thay vì số thật.
+// Khi chỉ sửa riêng các dòng lỗi, các dòng còn lại vẫn giữ dạng chữ → 1 cột bị lẫn 2 kiểu dữ liệu (số + chữ),
+// dễ gây lỗi khi Shopee đọc lại file. Hàm này ép TẤT CẢ giá trị hợp lệ trong cột giá về số sạch,
+// không đổi nội dung (78000.00 → 78000), không đụng tới các cột/ô không phải số (tên SP, mã SKU...).
+function toCleanNumber(v) {
+  if (v == null) return v;
+  if (typeof v === 'number') return v;
+  const s = String(v).trim();
+  if (s === '') return v;
+  const cleaned = s.replace(/,/g, '');
+  if (!/^-?\d+(\.\d+)?$/.test(cleaned)) return v; // không phải dạng số thuần → giữ nguyên (tránh đụng vào text khác)
+  const n = parseFloat(cleaned);
+  return isNaN(n) ? v : Math.round(n);
+}
+
 function exportCorrectedFiles() {
   const errRows = allRows.filter(r => r.type === 'err');
   if (!errRows.length) {
@@ -1449,6 +1464,15 @@ function exportCorrectedFiles() {
     const rawCopy = fr.raw.map(row => row ? row.slice() : row);
     const rowsForFile = errRows.filter(r => r.fileName === fr.name);
 
+    // Bước 1: chuẩn hoá toàn bộ giá trị cột giá về số sạch (tránh lẫn text "78000.00" với số 78000)
+    for (let idx = 0; idx < rawCopy.length; idx++) {
+      const row = rawCopy[idx];
+      if (!row) continue;
+      if (fr.cGG  >= 0) row[fr.cGG]  = toCleanNumber(row[fr.cGG]);
+      if (fr.cGia >= 0) row[fr.cGia] = toCleanNumber(row[fr.cGia]);
+    }
+
+    // Bước 2: ghi đè giá đúng cho riêng các dòng đang lỗi
     for (const r of rowsForFile) {
       const idx = r.rowNum - 1;
       if (idx < 0 || idx >= rawCopy.length || !rawCopy[idx]) { skippedCount++; continue; }
