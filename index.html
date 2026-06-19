@@ -809,7 +809,9 @@ function validateSingleFile(bytes, fileName) {
     cTen   = fc('Tên Sản phẩm', 'Tên');
     cMaPLH = fc('Mã phân loại hàng', 'Mã phân loại'); // cần để tra combo
     cMaSP  = fc('Mã sản phẩm'); // cột A — fallback tra combo theo ID SP Shopee khi Mã phân loại hàng không khớp Nguồn 2
-    cTenPL = -1;
+    // cTenPL = "Tên phân loại hàng" (cột E) — dùng để nhận diện dấu hiệu COMBO độc lập với Nguồn 2:
+    // SP có biến thể LẺ → cột E và F đều có dữ liệu; SP có biến thể COMBO → cột E có, cột F TRỐNG.
+    cTenPL = fc('Tên phân loại hàng', 'Tên phân loại');
   }
 
   // ── Duyệt từng dòng dữ liệu ─────────────────────────────────────────
@@ -825,23 +827,38 @@ function validateSingleFile(bytes, fileName) {
       maPLH = normSku(row[cMaPLH] || '');
       tenPL = cTenPL >= 0 ? (row[cTenPL] || '').toString().trim() : '';
       maSP  = cMaSP >= 0 ? normSku(row[cMaSP] || '') : '';
+      // Dòng này là biến thể COMBO nếu Mã sản phẩm/Mã phân loại hàng đã khai báo ở Nguồn 2 — chặn
+      // không cho fallback singleSkuMap/singleSkuMapByPid gán nhầm SKU của 1 biến thể LẺ KHÁC cùng
+      // Mã sản phẩm (1 SP có thể vừa có biến thể lẻ vừa có biến thể combo, dùng chung Mã sản phẩm).
+      const isComboRow = (maSP  && comboMapByPid && (maSP in comboMapByPid))
+                       || (maPLH && comboMap && (maPLH in comboMap));
       // Tra SKU qua Nguồn 2 (singleSkuMap, từ DS SanPham MAP Salework)
-      sku = (maPLH && singleSkuMap) ? (singleSkuMap[maPLH] || '') : '';
+      sku = (!isComboRow && maPLH && singleSkuMap) ? (singleSkuMap[maPLH] || '') : '';
       // Fallback: Mã phân loại hàng không khớp Nguồn 2 → tra theo Mã sản phẩm (ID SP Shopee)
-      if (!sku && maSP && singleSkuMapByPid) sku = singleSkuMapByPid[maSP] || '';
+      if (!sku && !isComboRow && maSP && singleSkuMapByPid) sku = singleSkuMapByPid[maSP] || '';
     } else {
       // Đọc SKU phân loại thật của ĐÚNG biến thể này (cột F) trước, và Mã phân loại hàng để
       // xác định đây có phải 1 biến thể COMBO đã khai báo ở Nguồn 2 hay không.
       sku   = normSku(row[cSku] || '');
       maPLH = cMaPLH >= 0 ? normSku(row[cMaPLH] || '') : '';
       maSP  = cMaSP  >= 0 ? normSku(row[cMaSP]  || '') : '';
-      tenPL = '';
+      tenPL = cTenPL >= 0 ? (row[cTenPL] || '').toString().trim() : '';
+
+      // Dấu hiệu COMBO đọc trực tiếp từ chính dòng dữ liệu (độc lập với Nguồn 2/Salework):
+      // SP có biến thể LẺ → cột E (Tên phân loại hàng) VÀ cột F (SKU Phân loại hàng) đều có dữ liệu.
+      // SP có biến thể COMBO → cột E có dữ liệu nhưng cột F TRỐNG.
+      // Dùng làm lớp bảo vệ thêm: nếu dòng có dấu hiệu này, KHÔNG được coi là SP lẻ dù lỡ tra được
+      // SKU qua Nguồn 2 (tránh lặp lại đúng kiểu lỗi đã gặp: 1 Mã sản phẩm có cả biến thể lẻ +
+      // biến thể combo, singleSkuMapByPid trả nhầm SKU của biến thể lẻ khác cho dòng combo).
+      const looksLikeCombo = !sku && !!maPLH && !!tenPL;
 
       // Dòng này là biến thể COMBO nếu Mã sản phẩm (ưu tiên — Salework dùng "Mã phân loại" = chính
       // ID SP Shopee cho combo, kể cả khi SP có biến thể riêng) hoặc Mã phân loại hàng (fallback)
-      // đã được khai báo trong Nguồn 2 (DS SanPham) — kể cả khai báo rỗng/chưa đủ thành phần.
+      // đã được khai báo trong Nguồn 2 (DS SanPham) — kể cả khai báo rỗng/chưa đủ thành phần — HOẶC
+      // dòng có dấu hiệu combo rõ ràng từ chính file (cột E có, cột F trống).
       const isComboRow = (maSP  && comboMapByPid && (maSP in comboMapByPid))
-                       || (maPLH && comboMap && (maPLH in comboMap));
+                       || (maPLH && comboMap && (maPLH in comboMap))
+                       || looksLikeCombo;
 
       // CHỈ áp dụng thay đổi logic cho COMBO: không dùng "Số SKU Sản phẩm" (cột C — SKU CHUNG
       // của cả sản phẩm) để gán cho biến thể combo, vì với SP có cả biến thể lẻ và biến thể combo,
@@ -850,11 +867,15 @@ function validateSingleFile(bytes, fileName) {
       if (!sku && !isComboRow && cSkuParent >= 0) {
         sku = normSku(row[cSkuParent] || '');
       }
-      // Một số dòng (đặc biệt SP combo/SP lẻ chưa khai SKU) không có SKU ở cột F lẫn cột C
-      // → tra tiếp qua Nguồn 2 (singleSkuMap, mã phân loại → SKU) trước khi coi là combo/không có SKU
-      if (!sku && maPLH && singleSkuMap) sku = singleSkuMap[maPLH] || '';
+      // Một số dòng (đặc biệt SP lẻ chưa khai SKU) không có SKU ở cột F lẫn cột C
+      // → tra tiếp qua Nguồn 2 (singleSkuMap, mã phân loại → SKU) trước khi coi là không có SKU.
+      // BẮT BUỘC chặn !isComboRow: vì 1 Mã sản phẩm (idSP) có thể vừa có biến thể lẻ vừa có biến
+      // thể combo (VD: SP "Tập 1,2" có biến thể "Tập 1" lẻ + biến thể "Combo 2 Tập"), nên
+      // singleSkuMapByPid[maSP] có thể trả về SKU của biến thể LẺ KHÁC — nếu gán nhầm cho dòng
+      // combo sẽ làm dòng combo bị tính như SP lẻ (lấy sai Giá gốc, sai % giảm).
+      if (!sku && !isComboRow && maPLH && singleSkuMap) sku = singleSkuMap[maPLH] || '';
       // Fallback tiếp theo: Mã phân loại hàng không khớp Nguồn 2 → tra theo Mã sản phẩm (ID SP Shopee)
-      if (!sku && maSP && singleSkuMapByPid) sku = singleSkuMapByPid[maSP] || '';
+      if (!sku && !isComboRow && maSP && singleSkuMapByPid) sku = singleSkuMapByPid[maSP] || '';
     }
 
     const giaF = parseFloat(String(row[cGia] || '').replace(/,/g, '')) || null;
@@ -1035,6 +1056,12 @@ function validateSingleFile(bytes, fileName) {
         } else if ((maSP && comboMapByPid && maSP in comboMapByPid) || (maPLH && comboMap && maPLH in comboMap)) {
           type = 'nomap';
           errs.push('Combo chưa khai báo thành phần trong file DS SanPham');
+        } else if (looksLikeCombo) {
+          // Cột E (Tên phân loại hàng) có dữ liệu, cột F (SKU Phân loại hàng) trống → đây CHẮC CHẮN
+          // là 1 biến thể combo (theo quy tắc đã thống nhất), chỉ là Salework chưa khai báo Mã sản
+          // phẩm/Mã phân loại hàng này — KHÔNG được báo "Không có SKU" gây hiểu nhầm là thiếu barcode.
+          type = 'nomap';
+          errs.push(`Combo (theo Tên phân loại hàng "${tenPL}") nhưng chưa thấy Mã phân loại hàng/Mã sản phẩm này trong file DS SanPham — cần bổ sung khai báo ở Salework`);
         } else {
           type = 'warn'; errs.push('Không có SKU');
         }
