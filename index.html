@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="vi">
 <head>
@@ -250,6 +251,7 @@ tr.r-miss { background: #faf0ff !important; }
           <div class="tab" id="tabOk" onclick="setFilter('ok',this)">Hợp lệ</div>
         </div>
         <button class="btn-export" id="btnExport" onclick="exportFile()">⬇ Xuất</button>
+        <button class="btn-export" id="btnExportFixed" onclick="exportCorrectedFiles()" style="background:#4a6cf7" title="Tự động điền giá đúng vào các dòng lỗi giá, giữ nguyên định dạng file gốc để upload lại Shopee">📥 Xuất file đã sửa giá</button>
       </div>
       <div class="table-wrap">
         <table>
@@ -278,6 +280,7 @@ let comboMap    = null;   // Mã Phân loại → [{sku, qty}] (from DS SanPham 
 let comboMeta   = { count: 0, singles: 0 };
 let priceFiles  = [];   // [{name, bytes}]
 let allRows     = [];
+let fileResults = [];   // [{name, fmt, raw, cGG, cGia}] — dữ liệu thô từng file để xuất file đã sửa giá
 let curFilter   = 'all';
 let curPage     = 1;
 let curFmt      = 'discount'; // 'discount' | 'eligible'
@@ -687,12 +690,20 @@ function runCheck() {
 function doValidate() {
   try {
     allRows = [];
+    fileResults = [];
     const fmtSet = new Set();
     for (const pf of priceFiles) {
       const result = validateSingleFile(pf.bytes, pf.name);
       if (!result) continue; // bị cancel
       allRows = allRows.concat(result.rows);
       fmtSet.add(result.fmt);
+      fileResults.push({
+        name: pf.name,
+        fmt: result.fmt,
+        raw: result.raw || null,
+        cGG: (result.cGG != null ? result.cGG : -1),
+        cGia: (result.cGia != null ? result.cGia : -1)
+      });
     }
     // curFmt: nếu chỉ 1 loại → dùng loại đó; nhiều loại → 'mixed'
     curFmt = fmtSet.size === 1 ? [...fmtSet][0] : (fmtSet.size > 1 ? 'mixed' : 'discount');
@@ -1018,7 +1029,7 @@ function validateSingleFile(bytes, fileName) {
     });
   }
 
-  return { rows, fmt };
+  return { rows, fmt, raw, cGG, cGia };
 }
 
 // ── Render ────────────────────────────────────────────────────────────────
@@ -1355,6 +1366,84 @@ function exportFile() {
   XLSX.utils.book_append_sheet(wbOut, wsOut, sheetName);
   const d = new Date();
   XLSX.writeFile(wbOut, `2h_${suffix}_${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}.xlsx`);
+}
+
+// ── Tự sửa giá sai + xuất file giữ nguyên format gốc ────────────────────────
+// Công thức: giá đúng = giá gốc chuẩn (hoặc giá gốc combo) × (1 − %max cho phép)
+// r.ggMaster và r.pctMax đã được tính sẵn ở validateSingleFile() cho cả SP lẻ và combo
+// → dùng chung 1 công thức, không cần phân biệt combo / không combo.
+function computeCorrectedPrice(r) {
+  const baseGoc = r.ggMaster;
+  if (baseGoc == null || isNaN(baseGoc) || baseGoc <= 0) return null; // không có giá chuẩn để sửa
+
+  let gd;
+  if (r.pctMax != null && !isNaN(r.pctMax)) {
+    gd = Math.round(baseGoc * (1 - r.pctMax / 100));
+  } else if (r.gd != null && !isNaN(r.gd) && r.gd > 0 && r.gd <= baseGoc) {
+    // Không có %max chuẩn → giữ giá KM cũ nếu nó hợp lệ (≤ giá gốc)
+    gd = Math.round(r.gd);
+  } else {
+    gd = Math.round(baseGoc);
+  }
+  return { gg: Math.round(baseGoc), gd };
+}
+
+function exportCorrectedFiles() {
+  const errRows = allRows.filter(r => r.type === 'err');
+  if (!errRows.length) {
+    alert('Không có dòng lỗi giá nào để sửa. (Chỉ các dòng "Có lỗi giá" mới được tự động điền lại — các dòng khác giữ nguyên.)');
+    return;
+  }
+  if (!fileResults.length) {
+    alert('Không có dữ liệu file gốc để xuất. Vui lòng kiểm tra lại file đã tải lên.');
+    return;
+  }
+
+  let fixedCount = 0, skippedCount = 0;
+  const outputs = []; // [{name, rawCopy}]
+
+  for (const fr of fileResults) {
+    if (!fr.raw) { skippedCount += errRows.filter(r => r.fileName === fr.name).length; continue; }
+    const rawCopy = fr.raw.map(row => row ? row.slice() : row);
+    const rowsForFile = errRows.filter(r => r.fileName === fr.name);
+
+    for (const r of rowsForFile) {
+      const idx = r.rowNum - 1;
+      if (idx < 0 || idx >= rawCopy.length || !rawCopy[idx]) { skippedCount++; continue; }
+      const corrected = computeCorrectedPrice(r);
+      if (!corrected) { skippedCount++; continue; }
+      if (fr.cGG >= 0)  rawCopy[idx][fr.cGG]  = corrected.gg;
+      if (fr.cGia >= 0) rawCopy[idx][fr.cGia] = corrected.gd;
+      fixedCount++;
+    }
+    outputs.push({ name: fr.name, rawCopy });
+  }
+
+  if (!fixedCount) {
+    alert('Không sửa được dòng nào (thiếu giá chuẩn hoặc dữ liệu gốc). Vui lòng kiểm tra lại nguồn dữ liệu chuẩn (Google Sheets).');
+    return;
+  }
+
+  const wbOut = XLSX.utils.book_new();
+  for (const out of outputs) {
+    const wsOut = XLSX.utils.aoa_to_sheet(out.rawCopy);
+    let sheetName = out.name.replace(/\.[^.]+$/, '').slice(0, 31) || 'Sheet1';
+    // Tránh trùng tên sheet
+    let n = 1, base = sheetName;
+    while (wbOut.SheetNames.includes(sheetName)) { sheetName = (base + '_' + (++n)).slice(0, 31); }
+    XLSX.utils.book_append_sheet(wbOut, wsOut, sheetName);
+  }
+
+  const d = new Date();
+  const dateSuffix = `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`;
+  const fname = outputs.length === 1
+    ? outputs[0].name.replace(/\.[^.]+$/, '') + '_da_sua_gia.xlsx'
+    : `2H_da_sua_gia_${dateSuffix}.xlsx`;
+  XLSX.writeFile(wbOut, fname);
+
+  alert(`✅ Đã tự động sửa ${fixedCount} dòng lỗi giá.` +
+        (skippedCount ? `\n⚠️ ${skippedCount} dòng không sửa được (thiếu giá chuẩn hoặc dữ liệu gốc).` : '') +
+        `\n\nFile đã giữ nguyên format gốc — có thể upload lại lên Shopee. Các dòng không lỗi được giữ nguyên không thay đổi.`);
 }
 
 function fmtN(n){return(n!=null&&!isNaN(n))?Math.round(n).toLocaleString('vi-VN')+'đ':'—';}
