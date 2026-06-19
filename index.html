@@ -821,7 +821,7 @@ function validateSingleFile(bytes, fileName) {
     const row = raw[i];
     if (!row || !row.some(c => c !== null && c !== '')) continue; // bỏ dòng trống
 
-    let sku, maPLH, tenPL, maSP;
+    let sku, maPLH, tenPL, maSP, looksLikeCombo = false;
 
     if (fmt === 'eligible') {
       maPLH = normSku(row[cMaPLH] || '');
@@ -850,7 +850,7 @@ function validateSingleFile(bytes, fileName) {
       // Dùng làm lớp bảo vệ thêm: nếu dòng có dấu hiệu này, KHÔNG được coi là SP lẻ dù lỡ tra được
       // SKU qua Nguồn 2 (tránh lặp lại đúng kiểu lỗi đã gặp: 1 Mã sản phẩm có cả biến thể lẻ +
       // biến thể combo, singleSkuMapByPid trả nhầm SKU của biến thể lẻ khác cho dòng combo).
-      const looksLikeCombo = !sku && !!maPLH && !!tenPL;
+      looksLikeCombo = !sku && !!maPLH && !!tenPL;
 
       // Dòng này là biến thể COMBO nếu Mã sản phẩm (ưu tiên — Salework dùng "Mã phân loại" = chính
       // ID SP Shopee cho combo, kể cả khi SP có biến thể riêng) hoặc Mã phân loại hàng (fallback)
