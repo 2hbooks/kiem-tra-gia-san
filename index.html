@@ -899,15 +899,19 @@ function validateSingleFile(bytes, fileName) {
         type = 'warn'; errs.push('Không có Mã phân loại hàng');
 
       } else if (!sku) {
-        // Không tra được SKU → kiểm tra có phải combo không. Ưu tiên tra theo Mã sản phẩm
-        // (ID SP Shopee) khớp với "Mã phân loại" ở Salework — vì Salework dùng chính ID SP Shopee
-        // làm "Mã phân loại" cho combo, kể cả khi SP có biến thể riêng trên Shopee.
-        // Mã phân loại hàng chỉ dùng làm fallback phụ.
-        let comboComps = (maSP && comboMapByPid) ? comboMapByPid[maSP] : null;
-        let viaPid = !!(comboComps && comboComps.length > 0);
-        if ((!comboComps || comboComps.length === 0) && maPLH && comboMap && comboMap[maPLH]) {
-          comboComps = comboMap[maPLH];
-          viaPid = false;
+        // Không tra được SKU → kiểm tra có phải combo không.
+        // ƯU TIÊN tra theo "Mã phân loại hàng" khớp với "Mã phân loại" ở Salework — vì mỗi BIẾN THỂ
+        // combo của 1 SP (VD: nhiều màu/size khác nhau) có 1 dòng khai báo RIÊNG trong Salework với
+        // thành phần khác nhau. CHỈ fallback sang "Mã sản phẩm" (ID SP Shopee) khi không khớp được
+        // Mã phân loại hàng — dành cho trường hợp Salework dùng chính ID SP Shopee làm "Mã phân loại"
+        // cho combo KHÔNG có biến thể thật. KHÔNG được ưu tiên maSP trước: comboMapByPid[maSP] gộp
+        // CHUNG thành phần của MỌI biến thể combo cùng 1 SP, nên nếu ưu tiên tra theo maSP trước sẽ
+        // lấy nhầm thành phần gộp của các biến thể khác cho biến thể hiện tại (sai giá gốc combo).
+        let comboComps = (maPLH && comboMap) ? comboMap[maPLH] : null;
+        let viaPid = false;
+        if ((!comboComps || comboComps.length === 0) && maSP && comboMapByPid && comboMapByPid[maSP]) {
+          comboComps = comboMapByPid[maSP];
+          viaPid = true;
         }
 
         if (comboComps && comboComps.length > 0) {
@@ -1003,12 +1007,18 @@ function validateSingleFile(bytes, fileName) {
       // discount nomination
       if (!sku) {
         if (!giaF && !ten) continue; // dòng hoàn toàn rỗng
-        // Kiểm tra có phải combo không. Ưu tiên tra theo Mã sản phẩm (ID SP Shopee) khớp với
-        // "Mã phân loại" ở Salework — vì Salework dùng chính ID SP Shopee làm "Mã phân loại" cho
-        // combo, kể cả khi SP có biến thể riêng trên Shopee. Mã phân loại hàng chỉ là fallback phụ.
-        let comboComps = (maSP && comboMapByPid) ? comboMapByPid[maSP] : null;
-        if ((!comboComps || comboComps.length === 0) && maPLH && comboMap && comboMap[maPLH]) {
-          comboComps = comboMap[maPLH];
+        // Kiểm tra có phải combo không.
+        // ƯU TIÊN tra theo "Mã phân loại hàng" khớp với "Mã phân loại" ở Salework — vì mỗi BIẾN THỂ
+        // combo của 1 SP (VD: nhiều màu/size khác nhau) có 1 dòng khai báo RIÊNG trong Salework với
+        // thành phần khác nhau. CHỈ fallback sang "Mã sản phẩm" (ID SP Shopee) khi không khớp được
+        // Mã phân loại hàng — dành cho combo KHÔNG có biến thể thật (Salework dùng chính ID SP Shopee
+        // làm "Mã phân loại"). KHÔNG ưu tiên maSP trước: comboMapByPid[maSP] gộp CHUNG thành phần của
+        // MỌI biến thể combo cùng 1 SP — ưu tiên maSP trước sẽ lấy nhầm thành phần gộp của các biến
+        // thể KHÁC cho biến thể hiện tại, làm sai Giá gốc combo (đây chính là lỗi -127.7%/sai % giảm
+        // hàng loạt đã gặp với các SP combo có nhiều biến thể, ví dụ "Combo 5 Vở Chép Nhạc...").
+        let comboComps = (maPLH && comboMap) ? comboMap[maPLH] : null;
+        if ((!comboComps || comboComps.length === 0) && maSP && comboMapByPid && comboMapByPid[maSP]) {
+          comboComps = comboMapByPid[maSP];
         }
         if (comboComps && comboComps.length > 0) {
           // ── COMBO VALIDATION (discount) ───────────────────────────
