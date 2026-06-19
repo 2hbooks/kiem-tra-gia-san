@@ -261,11 +261,18 @@ const DEFAULT_TOL = 0.5;
 const LS_COMBO_DATA   = '2h_combo_data';     // comboMap đã lưu (Nguồn 2 — cố định, dùng chung mọi shop)
 const LS_COMBO_META   = '2h_combo_meta';
 const LS_SKUMAP_DATA  = '2h_skumap_data';    // singleSkuMap đã lưu (Nguồn 2 — mã phân loại → SKU của SP lẻ)
+const LS_COMBO_PID_DATA  = '2h_combo_pid_data';  // comboMapByPid đã lưu (Nguồn 2 — Mã sản phẩm → [{sku,qty}])
+const LS_SKUMAP_PID_DATA = '2h_skumap_pid_data'; // singleSkuMapByPid đã lưu (Nguồn 2 — Mã sản phẩm → SKU)
 
 let masterMap   = null;
 let masterMeta  = { skus: 0, nccs: 0, loadedAt: null };
 let comboMap     = null;   // Mã Phân loại → [{sku, qty}] (from DS SanPham file — Nguồn 2)
 let singleSkuMap = null;   // Mã Phân loại → SKU của SP lẻ (from DS SanPham file — Nguồn 2)
+// Fallback khi "Mã phân loại hàng" của file đẩy sàn KHÔNG khớp "Mã phân loại" trong Nguồn 2
+// (combo nhiều dòng thành phần dùng chung 1 "Mã phân loại" = chính "ID SP Shopee" của sản phẩm gốc) —
+// tra tiếp theo "Mã sản phẩm" (ID SP Shopee) như anh Đức yêu cầu.
+let comboMapByPid     = null;  // Mã sản phẩm (ID SP Shopee) → [{sku, qty}]
+let singleSkuMapByPid = null;  // Mã sản phẩm (ID SP Shopee) → SKU
 let comboMeta   = { count: 0, singles: 0 };
 let priceFiles  = [];   // [{name, bytes}]
 let allRows     = [];
@@ -300,6 +307,10 @@ function loadSavedCombo() {
     comboMeta    = JSON.parse(meta);
     const savedSku = localStorage.getItem(LS_SKUMAP_DATA);
     singleSkuMap = savedSku ? JSON.parse(savedSku) : null;
+    const savedComboPid = localStorage.getItem(LS_COMBO_PID_DATA);
+    comboMapByPid = savedComboPid ? JSON.parse(savedComboPid) : null;
+    const savedSkuPid = localStorage.getItem(LS_SKUMAP_PID_DATA);
+    singleSkuMapByPid = savedSkuPid ? JSON.parse(savedSkuPid) : null;
     const dot = document.getElementById('comboDot');
     const txt = document.getElementById('comboText');
     const sub = document.getElementById('comboSub');
@@ -317,8 +328,12 @@ function clearSavedCombo() {
   localStorage.removeItem(LS_COMBO_DATA);
   localStorage.removeItem(LS_COMBO_META);
   localStorage.removeItem(LS_SKUMAP_DATA);
+  localStorage.removeItem(LS_COMBO_PID_DATA);
+  localStorage.removeItem(LS_SKUMAP_PID_DATA);
   comboMap = null;
   singleSkuMap = null;
+  comboMapByPid = null;
+  singleSkuMapByPid = null;
   comboMeta = { count: 0, singles: 0 };
   document.getElementById('comboDot').className = 'status-dot dot-idle';
   document.getElementById('comboText').textContent = 'Chưa tải file danh sách sản phẩm';
@@ -494,6 +509,8 @@ function handleComboFile(file) {
       const result = parseComboFromXlsx(bytes);
       comboMap     = result.map;
       singleSkuMap = result.skuMap;
+      comboMapByPid     = result.mapByPid;
+      singleSkuMapByPid = result.skuMapByPid;
       comboMeta = { count: result.comboCount, singles: result.singleCount, fileName: file.name, savedAt: Date.now() };
       dot.className = 'status-dot dot-ok';
       const nSku = Object.keys(singleSkuMap).length;
@@ -503,6 +520,8 @@ function handleComboFile(file) {
         localStorage.setItem(LS_COMBO_DATA, JSON.stringify(comboMap));
         localStorage.setItem(LS_COMBO_META, JSON.stringify(comboMeta));
         localStorage.setItem(LS_SKUMAP_DATA, JSON.stringify(singleSkuMap));
+        localStorage.setItem(LS_COMBO_PID_DATA, JSON.stringify(comboMapByPid));
+        localStorage.setItem(LS_SKUMAP_PID_DATA, JSON.stringify(singleSkuMapByPid));
       } catch(e2) {
         console.error('Không lưu được combo vào localStorage (có thể do dữ liệu quá lớn):', e2);
       }
@@ -522,6 +541,11 @@ function parseComboFromXlsx(bytes) {
 
   const map = {};         // mãPhânLoại → [{sku, qty}]  (combo)
   const skuMap = {};      // mãPhânLoại → SKU            (SP lẻ)
+  // Map dự phòng theo "Mã sản phẩm" (ID SP Shopee) — dùng khi "Mã phân loại hàng" của file đẩy sàn
+  // không khớp "Mã phân loại" trong Nguồn 2 (combo nhiều dòng thành phần dùng chung 1 "Mã phân loại"
+  // = chính ID SP Shopee của sản phẩm, không phải mã phân loại biến thể thật trên Shopee).
+  const mapByPid    = {};  // Mã sản phẩm (ID SP Shopee) → [{sku, qty}]
+  const skuMapByPid = {};  // Mã sản phẩm (ID SP Shopee) → SKU
   let comboCount  = 0;
   let singleCount = 0;
 
@@ -542,8 +566,10 @@ function parseComboFromXlsx(bytes) {
     if (hIdx < 0) continue;
 
     const headers = (raw[hIdx] || []).map(h => norm(h));
-    // Cột F (index 5) = Mã phân loại | Cột H (index 7) = SKU Shopee | Cột I (index 8) = Mã Salework | Cột J (index 9) = Số lượng combo
+    // Cột E = ID SP Shopee (Mã sản phẩm) | Cột F = Mã phân loại | Cột H = SKU Shopee
+    // | Cột I = Mã Salework | Cột J = Số lượng combo
     // LƯU Ý: Cột G = "Phân loại / Combo" cũng chứa chữ "combo" → phải tìm chính xác hơn
+    const cIdSP = headers.findIndex(h => h.includes('idspshopee') || h.includes('idsp') || h === 'idsp');
     const cMaPL = headers.findIndex(h => h === 'mãphânloại' || (h.includes('mãphânloại')));
     const cSkuSP= headers.findIndex(h => h === 'skushopee' || h.includes('skushopee'));
     const cComp = headers.findIndex(h => h.includes('salework') || h.includes('liênkết'));
@@ -557,6 +583,7 @@ function parseComboFromXlsx(bytes) {
       if (!row) continue;
       const maPL   = normSku(row[cMaPL] || '');
       if (!maPL) continue;
+      const idSP = normSku(cIdSP >= 0 ? (row[cIdSP] || '') : '');
 
       const skuSP  = normSku(cSkuSP >= 0 ? (row[cSkuSP] || '') : '');
       const compSku = normSku(cComp  >= 0 ? (row[cComp]  || '') : '');
@@ -567,6 +594,7 @@ function parseComboFromXlsx(bytes) {
       if (skuSP) {
         singleCount++;
         if (!skuMap[maPL]) skuMap[maPL] = skuSP;
+        if (idSP && !skuMapByPid[idSP]) skuMapByPid[idSP] = skuSP;
         continue;
       }
 
@@ -577,12 +605,25 @@ function parseComboFromXlsx(bytes) {
           comboCount++;
         }
         map[maPL].push({ sku: compSku, qty });
+        // Đăng ký đồng thời theo Mã sản phẩm (ID SP Shopee) — phòng trường hợp file đẩy sàn
+        // dùng "Mã phân loại hàng" khác với "Mã phân loại" khai báo ở đây (combo nhiều dòng
+        // thành phần dùng chung 1 Mã phân loại = chính ID SP Shopee).
+        if (idSP) {
+          if (!mapByPid[idSP]) mapByPid[idSP] = [];
+          mapByPid[idSP].push({ sku: compSku, qty });
+        }
+      } else if (!map[maPL]) {
+        // Mã phân loại NÀY đã có dòng khai báo trong Nguồn 3 (không phải SP lẻ),
+        // nhưng thiếu Mã Salework liên kết hoặc Số lượng combo → đăng ký placeholder rỗng.
+        // Nhờ vậy khi validate sẽ báo đúng "Combo chưa khai báo thành phần trong file DS SanPham"
+        // thay vì thông báo mơ hồ "Thiếu SKU"/"Không có SKU".
+        map[maPL] = [];
+        if (idSP && !mapByPid[idSP]) mapByPid[idSP] = [];
       }
-      // qty = 0 hoặc compSku rỗng → combo chưa khai báo, bỏ qua (sẽ báo lỗi khi validate)
     }
   }
 
-  return { map, skuMap, comboCount, singleCount };
+  return { map, skuMap, mapByPid, skuMapByPid, comboCount, singleCount };
 }
 
 // ── Price file upload ─────────────────────────────────────────────────────
@@ -742,7 +783,7 @@ function validateSingleFile(bytes, fileName) {
     return -1;
   };
 
-  let cSku, cSkuParent = -1, cGia, cGG, cTen, cMaPLH, cTenPL;
+  let cSku, cSkuParent = -1, cGia, cGG, cTen, cMaPLH, cTenPL, cMaSP;
 
   if (fmt === 'eligible') {
     // Eligible Product List: tên cột cố định, dùng exact match
@@ -751,6 +792,7 @@ function validateSingleFile(bytes, fileName) {
     cGG    = exact('Giá Gốc');
     cGia   = exact('Giá khuyến mãi');
     cTen   = exact('Tên sản phẩm');
+    cMaSP  = exact('Mã sản phẩm');
     cSku   = -1; // không có SKU trực tiếp — sẽ tra qua mapping
   } else {
     // Discount Nomination: có thể có hậu tố "(Tùy chọn)", dùng fc với strip
@@ -762,6 +804,7 @@ function validateSingleFile(bytes, fileName) {
     cGia   = fc('Giá đã giảm', 'Giảm');
     cTen   = fc('Tên Sản phẩm', 'Tên');
     cMaPLH = fc('Mã phân loại hàng', 'Mã phân loại'); // cần để tra combo
+    cMaSP  = fc('Mã sản phẩm'); // cột A — fallback tra combo theo ID SP Shopee khi Mã phân loại hàng không khớp Nguồn 2
     cTenPL = -1;
   }
 
@@ -772,22 +815,28 @@ function validateSingleFile(bytes, fileName) {
     const row = raw[i];
     if (!row || !row.some(c => c !== null && c !== '')) continue; // bỏ dòng trống
 
-    let sku, maPLH, tenPL;
+    let sku, maPLH, tenPL, maSP;
 
     if (fmt === 'eligible') {
       maPLH = normSku(row[cMaPLH] || '');
       tenPL = cTenPL >= 0 ? (row[cTenPL] || '').toString().trim() : '';
+      maSP  = cMaSP >= 0 ? normSku(row[cMaSP] || '') : '';
       // Tra SKU qua Nguồn 2 (singleSkuMap, từ DS SanPham MAP Salework)
       sku = (maPLH && singleSkuMap) ? (singleSkuMap[maPLH] || '') : '';
+      // Fallback: Mã phân loại hàng không khớp Nguồn 2 → tra theo Mã sản phẩm (ID SP Shopee)
+      if (!sku && maSP && singleSkuMapByPid) sku = singleSkuMapByPid[maSP] || '';
     } else {
       // Ưu tiên SKU phân loại (cột F) → fallback SKU sản phẩm (cột C) khi SP chỉ có 1 phân loại
       sku   = normSku(row[cSku] || '')
            || normSku(cSkuParent >= 0 ? (row[cSkuParent] || '') : '');
       maPLH = cMaPLH >= 0 ? normSku(row[cMaPLH] || '') : '';
+      maSP  = cMaSP  >= 0 ? normSku(row[cMaSP]  || '') : '';
       tenPL = '';
       // Một số dòng (đặc biệt SP combo) không có SKU trong file gốc lẫn SKU sản phẩm
       // → tra tiếp qua Nguồn 2 (singleSkuMap, mã phân loại → SKU) trước khi coi là combo/không có SKU
       if (!sku && maPLH && singleSkuMap) sku = singleSkuMap[maPLH] || '';
+      // Fallback tiếp theo: Mã phân loại hàng không khớp Nguồn 2 → tra theo Mã sản phẩm (ID SP Shopee)
+      if (!sku && maSP && singleSkuMapByPid) sku = singleSkuMapByPid[maSP] || '';
     }
 
     const giaF = parseFloat(String(row[cGia] || '').replace(/,/g, '')) || null;
@@ -807,8 +856,14 @@ function validateSingleFile(bytes, fileName) {
         type = 'warn'; errs.push('Không có Mã phân loại hàng');
 
       } else if (!sku) {
-        // Không có trong Mass Update mapping → kiểm tra có phải combo không
-        const comboComps = comboMap ? comboMap[maPLH] : null;
+        // Không tra được SKU → kiểm tra có phải combo không (tra theo Mã phân loại hàng,
+        // fallback theo Mã sản phẩm/ID SP Shopee nếu Mã phân loại hàng không khớp Nguồn 2)
+        let comboComps = comboMap ? comboMap[maPLH] : null;
+        let viaPid = false;
+        if ((!comboComps || comboComps.length === 0) && maSP && comboMapByPid && comboMapByPid[maSP]) {
+          comboComps = comboMapByPid[maSP];
+          viaPid = true;
+        }
 
         if (comboComps && comboComps.length > 0) {
           // ── COMBO VALIDATION ──────────────────────────────────────
@@ -857,8 +912,8 @@ function validateSingleFile(bytes, fileName) {
             // ncc sẽ được gán sau
           }
 
-        } else if (comboMap && maPLH in comboMap) {
-          // comboMap có key nhưng array rỗng → combo chưa khai báo thành phần
+        } else if ((comboMap && maPLH in comboMap) || (maSP && comboMapByPid && maSP in comboMapByPid)) {
+          // comboMap/comboMapByPid có key nhưng array rỗng → combo chưa khai báo thành phần
           type = 'nomap';
           errs.push('Combo chưa khai báo thành phần trong file DS SanPham');
         } else {
@@ -892,8 +947,12 @@ function validateSingleFile(bytes, fileName) {
       // discount nomination
       if (!sku) {
         if (!giaF && !ten) continue; // dòng hoàn toàn rỗng
-        // Kiểm tra có phải combo không (tra maPLH vào comboMap)
-        const comboComps = (maPLH && comboMap) ? comboMap[maPLH] : null;
+        // Kiểm tra có phải combo không (tra maPLH vào comboMap, fallback theo Mã sản phẩm/ID SP Shopee
+        // khi Mã phân loại hàng của file đẩy sàn không khớp Mã phân loại trong Nguồn 2)
+        let comboComps = (maPLH && comboMap) ? comboMap[maPLH] : null;
+        if ((!comboComps || comboComps.length === 0) && maSP && comboMapByPid && comboMapByPid[maSP]) {
+          comboComps = comboMapByPid[maSP];
+        }
         if (comboComps && comboComps.length > 0) {
           // ── COMBO VALIDATION (discount) ───────────────────────────
           isCombo = true;
@@ -928,7 +987,7 @@ function validateSingleFile(bytes, fileName) {
             if (errs.length) type = 'err';
             sku = 'COMBO';
           }
-        } else if (maPLH && comboMap && maPLH in comboMap) {
+        } else if ((maPLH && comboMap && maPLH in comboMap) || (maSP && comboMapByPid && maSP in comboMapByPid)) {
           type = 'nomap';
           errs.push('Combo chưa khai báo thành phần trong file DS SanPham');
         } else {
